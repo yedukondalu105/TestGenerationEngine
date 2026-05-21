@@ -1,0 +1,43 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Debug / generated run outputs
+debug_outputs/
+
+# Node.js
+node_modules/
+frontend/node_modules/
+
+# Next.js build output
+.next/
+frontend/.next/
+out/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Claude Code local settings
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
