@@ -244,6 +244,96 @@ Acts as a **senior QA reviewer / critic**. Reviews the full pipeline output to p
 
 ---
 
+## Agent Contribution Analysis
+
+Empirical analysis based on run `20260521_221500_api` (Trade Amendment, 89.57s total, single pass — review returned Pass immediately).
+
+### Timing and output sizes
+
+| Agent | Time | Input chars | Output chars | Expansion |
+|-------|------|------------|-------------|-----------|
+| retrieve_context | 2.69s | — | 10,126 | — |
+| requirement_understanding | 6.33s | 10,126 | 1,430 | 0.14× (compression) |
+| dependency_mapping | 5.91s | 11,556 | 1,382 | 0.12× (compression) |
+| scenario_generation | 11.66s | ~15,000 | 2,399 | 0.16× (compression) |
+| gherkin_generation | **59.95s** | 2,399 | 15,874 | **6.6× (expansion)** |
+| review_agent | 3.03s | ~21,000 | 723 | — |
+
+The pipeline compresses 10k chars of raw knowledge down to ~2.4k scenario names, then expands to 15.9k chars of Gherkin. Gherkin generation is 67% of total wall-clock time.
+
+---
+
+### Agent 1 — retrieve_context · Essential
+
+Pulls grounded facts from Confluence via Graph RAG: 13 typed relationship triples (`REQUIRES`, `DEPENDENCY`, `ERROR_CODE`) plus 8 unstructured text chunks containing the actual business rules (*"only approved trades can be amended"*, *"amendment reason mandatory"*, settlement blocking, error codes, auth rules). This is the only node that knows what the actual system does — every downstream agent would hallucinate without it.
+
+---
+
+### Agent 2 — requirement_understanding · Useful but thin
+
+Compresses 10,126 chars of mixed graph/text RAG output into 1,430 chars of clean structured JSON. Genuine contributions:
+- Makes `allowed_transitions` and `blocked_transitions` explicit as typed fields
+- Extracts `actors`, `postconditions`, `apis` — things not present in graph triples
+- Normalises inconsistent wording across multiple Confluence chunks
+
+**Limitation**: The output is almost a direct restatement of the RAG content — it formats rather than reasons. Every field maps 1:1 to something already present in the retrieved context. It acts as a structured formatter, not an analyst.
+
+---
+
+### Agent 3 — dependency_mapping · Most redundant in the current design
+
+Receives both the RAG (10,126 chars) and the structured requirements (1,430 chars) — the same information twice — and produces another 1,382 chars of JSON. Fields it adds over Agent 2:
+
+| New field | Value added |
+|-----------|------------|
+| `blocked_by: ["Settlement"]` | Already implied by Agent 2's `blocked_transitions` |
+| `cross_module_impacts` | Partially duplicates Agent 2's `related_modules` |
+| `workflow_sequence` | Derivable from Agent 2's `dependencies` + `allowed_transitions` |
+| `dependency_risks` | Interesting, but not consumed by any downstream agent in a traceable way |
+
+**Core problem**: `Scenario_prompt.txt` contains locked `REQUIRED NET-NEW SCENARIOS` rules that mandate dependency, cross-module, and workflow-transition scenarios by name regardless of what this agent outputs. The scenario agent would produce identical scenarios if Agent 3's output were empty because the prompt rules override the context. Agents 2 and 3 together cost ~12s and ~12k tokens of repeated RAG text for marginal differentiated value.
+
+---
+
+### Agent 4 — scenario_generation · Prompt follower in this domain
+
+Produces 35 scenario names across 10 categories. For the Trade Amendment domain, `Scenario_prompt.txt` contains a locked `OUTPUT EXAMPLE` with the exact scenario names, exact category assignments, and exact input values (qty=-1, price=-100.00, "abc", "INVALID-ID", etc.). The agent's job is close to transcribing this example using the context as confirmation rather than derivation.
+
+**Where it earns its cost**: For a completely new domain with no locked example, all the context from Agents 2 and 3 becomes essential — the agent must derive scenario categories and inputs from scratch. For Trade Amendment specifically, the prompt engineering has essentially pre-encoded the answer.
+
+---
+
+### Agent 5 — gherkin_generation · Does the most actual work
+
+The only agent where output is substantially larger than input (6.6× expansion). Converts 35 plain scenario names into 15,874 chars of executable BDD Gherkin, applying 21 wording/category/input rules, concrete test data rules, and per-category differentiation rules. The quality of the final output is almost entirely determined by this agent — the reason the project required 10+ rounds of prompt engineering was almost exclusively about fixing this agent's output.
+
+The 59.95s cost reflects the volume: generating consistent `Given / When / Then / And` blocks for 35 scenarios while maintaining cross-scenario consistency (no duplicate Given+When+Then pairs, correct error codes, correct audit assertions per scenario type).
+
+---
+
+### Agent 6 — review_agent · Safety net — high value when triggered
+
+In clean runs it returns `Pass` in ~3s at negligible cost. Its value is conditional: when it fires the retry loop (status = `Needs Improvement`), it injects the gap list back into Agent 4 as explicit instructions, which in earlier runs caught real missing scenarios (missing 3rd Audit scenario, wrong error codes in Dependency scenarios, cross-category duplicates). The 39-rule review prompt acts as a compiled quality specification that prevents regression.
+
+---
+
+### Summary — value per agent
+
+| Agent | Verdict | Rationale |
+|-------|---------|-----------|
+| retrieve_context | **Essential** | Only source of grounded domain facts |
+| requirement_understanding | **Useful** | Compression + normalisation; mergeable with dep mapping |
+| dependency_mapping | **Weakest case** | Mostly re-derives what Agent 2 already has; prompt rules make its output less load-bearing |
+| scenario_generation | **Context-dependent** | High value for unknown domains; low marginal value for well-locked prompt domains |
+| gherkin_generation | **Essential** | 67% of wall time, 6.6× output expansion, core deliverable |
+| review_agent | **Essential** | Quality gate + retry trigger; cheap in passing runs, critical in failing ones |
+
+### Potential optimisation
+
+Agents 2 and 3 could be merged into a single *context normaliser* agent that produces both requirement and dependency structure in one LLM call. This would save one round-trip (~6s, ~12k prompt tokens of duplicated RAG content) with no meaningful loss in output quality for the current use case. The separation adds value primarily when the domain is unfamiliar and the dependency structure cannot be inferred from a single pass.
+
+---
+
 ## Debug Infrastructure
 
 Every node writes a structured debug file to `debug_outputs/<run_id>/`. A per-run timing registry (`_run_timings`) accumulates node wall-clock times and output sizes.
