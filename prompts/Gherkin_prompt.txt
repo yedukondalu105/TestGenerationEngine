@@ -229,7 +229,8 @@ These rules apply to EVERY scenario without exception:
 
 3. Error codes — use the EXACT names below (do not shorten or vary them):
    - MISSING_AMENDMENT_REASON     (reason field absent or empty)
-   - INVALID_AMENDMENT_REASON     (reason field exceeds maximum length — use a 256-character string to clearly violate the length constraint)
+   - INVALID_AMENDMENT_REASON     (reason field exceeds maximum length — use this EXACT 256-character string:
+     "InvalidReasonExceedingMaxLengthLimitInvalidReasonExceedingMaxLengthLimitInvalidReasonExceedingMaxLengthLimitInvalidReasonExceedingMaxLengthLimitInvalidReasonExceedingMaxLengthLimitInvalidReasonExceedingMaxLengthLimitInvalidReasonExceedingMaxLengthLimitAAAA")
    - INVALID_QUANTITY
    - INVALID_PRICE
    - INVALID_SETTLEMENT_DATE
@@ -298,10 +299,15 @@ These rules apply to EVERY scenario without exception:
     Do NOT copy the Dependency wording "the workflow engine should reject the Settled to Amended transition" — that phrasing belongs in Dependency only. Workflow Transition asserts the state does not change.
 
 14. DUPLICATE_TRADE scenario MUST sit in the Negative category, NOT Edge Case and NOT Error Handling.
-    Given MUST include: "And the same amendment has already been submitted for trade TRD-001"
+    The full Given block MUST be:
+      "Given the user is authenticated as Trader"
+      "And a trade with ID TRD-001 exists in Approved state"
+      "And the same amendment has already been submitted for trade TRD-001"
     When: "the user attempts to submit the same amendment again"
+    Do NOT use generic "And an approved trade exists" — the trade identity MUST be TRD-001 in both the
+    trade setup line AND the "already submitted" precondition line for consistency.
     Do NOT use reason="Duplicate" — that tests reason field content, not duplicate submission.
-    Do NOT generate a second DUPLICATE_TRADE scenario in Error Handling — one Negative scenario is sufficient. Having the same DUPLICATE_TRADE test in both categories is a duplicate.
+    Do NOT generate a second DUPLICATE_TRADE scenario in Error Handling — one Negative scenario is sufficient.
 
 15. Error Handling TRADE_NOT_FOUND — MUST use a malformed trade ID format to differentiate from Negative:
     Given: "And a trade with ID \"INVALID-ID\" is provided"
@@ -327,6 +333,25 @@ These rules apply to EVERY scenario without exception:
     - date business rule : "2020-01-01" (valid format, past date)
     Using "xyz", "abc", or "not-a-date" in a Validation scenario is FORBIDDEN — those are Error Handling exclusive inputs.
 
+20. Generic When clause rule — Workflow Transition, Cross Module, and Audit Validation scenarios MUST
+    use ONLY the generic When clause:
+      "When the user attempts to amend the trade"
+    NEVER add a specific field value (e.g., "quantity to 100", "price to 150.00") to the When clause
+    of these categories — doing so creates exact duplicates with Positive or Edge Case scenarios.
+    BAD:  "When the user attempts to amend the trade quantity to 100"  ← FORBIDDEN in WT / Cross Module / Audit
+    GOOD: "When the user attempts to amend the trade"                  ← ONLY permitted form for these categories
+    Only Positive scenario #02 (quantity update), Edge Case, Negative, Validation, and Error Handling
+    scenarios may include specific field values in the When clause.
+
+21. Field-specific Positive scenario Then rule — the Positive scenario that amends a specific field
+    (e.g., "Verify amendment successfully updates quantity") MUST have a Then clause that confirms
+    the specific field was updated, NOT the generic "the trade should be amended successfully":
+    BAD:  "Then the trade should be amended successfully"  ← does not assert what changed
+    GOOD: "Then the trade quantity should be updated to 150"  ← confirms the specific field value
+    The same applies for a price-specific Positive scenario: "Then the trade price should be updated to <value>"
+    Generic "Then the trade should be amended successfully" is only correct for Positive #01
+    (the general amendment scenario with no specific field in the When clause).
+
 19. Audit Validation category MUST contain EXACTLY 3 scenarios:
     Scenario 1: "Verify amendment operation audit logged"
                 Then: "Then the amendment should be audit logged"
@@ -343,12 +368,16 @@ CONCRETE TEST DATA RULES
 --------------------------------------------------
 
 Replace vague phrases with specific, concrete values in When/Then steps.
+This applies ONLY to scenarios that are testing a specific field value (Positive #02, Edge Case,
+Negative, Validation, Error Handling). It does NOT apply to Workflow Transition, Cross Module,
+or Audit Validation scenarios — those MUST use the generic "When the user attempts to amend the trade"
+(see rule 20 above).
 
-BAD:
+BAD (for Positive #02 quantity update scenario):
 When the user modifies the trade quantity
 
-GOOD:
-When the user amends the trade quantity to 100
+GOOD (for Positive #02 quantity update scenario):
+When the user attempts to amend the trade quantity to 150
 
 BAD:
 When the user enters an invalid price
