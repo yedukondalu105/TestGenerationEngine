@@ -392,9 +392,23 @@ def gherkin_generation_agent(state: QuestionState) -> dict:
     cleaned = strip_json_fences(raw_content)
     elapsed = time.perf_counter() - t0
 
-    # Pretty-print if it is valid JSON
+    # Pretty-print and deduplicate scenarios by scenario_name (case-insensitive)
     try:
-        pretty = json.dumps(json.loads(cleaned), indent=2)
+        parsed = json.loads(cleaned)
+        seen: set = set()
+        unique_scenarios = []
+        duplicates_removed = 0
+        for scenario in parsed.get("gherkin_scenarios", []):
+            key = scenario.get("scenario_name", "").strip().lower()
+            if key not in seen:
+                seen.add(key)
+                unique_scenarios.append(scenario)
+            else:
+                duplicates_removed += 1
+        if duplicates_removed:
+            parsed["gherkin_scenarios"] = unique_scenarios
+            print(f"  [DEDUP] Removed {duplicates_removed} duplicate scenario(s) by name.")
+        pretty = json.dumps(parsed, indent=2)
     except json.JSONDecodeError:
         pretty = cleaned
 
