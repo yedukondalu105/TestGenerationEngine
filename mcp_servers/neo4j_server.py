@@ -11,13 +11,18 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 
 mcp = FastMCP("neo4j")
 
+_driver = None
+
 
 def _get_driver():
-    from neo4j import GraphDatabase
-    uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-    username = os.getenv("NEO4J_USERNAME", "neo4j")
-    password = os.getenv("NEO4J_PASSWORD", "")
-    return GraphDatabase.driver(uri, auth=(username, password))
+    global _driver
+    if _driver is None:
+        from neo4j import GraphDatabase
+        uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+        username = os.getenv("NEO4J_USERNAME", "neo4j")
+        password = os.getenv("NEO4J_PASSWORD", "")
+        _driver = GraphDatabase.driver(uri, auth=(username, password))
+    return _driver
 
 
 def _run_query(cypher: str, params: Optional[dict] = None) -> list:
@@ -26,7 +31,6 @@ def _run_query(cypher: str, params: Optional[dict] = None) -> list:
     with driver.session(database=db) as session:
         result = session.run(cypher, params or {})
         return [dict(record) for record in result]
-    driver.close()
 
 
 @mcp.tool()
