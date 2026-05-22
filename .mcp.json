@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "neo4j": {
+      "command": "D:\\Architect\\TestCasesGenerator\\.venv\\Scripts\\python.exe",
+      "args": ["D:\\Architect\\TestCasesGenerator\\mcp_servers\\neo4j_server.py"]
+    },
+    "confluence": {
+      "command": "D:\\Architect\\TestCasesGenerator\\.venv\\Scripts\\python.exe",
+      "args": ["D:\\Architect\\TestCasesGenerator\\mcp_servers\\confluence_server.py"]
+    }
+  }
+}
