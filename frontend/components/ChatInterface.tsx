@@ -3,9 +3,9 @@
 import { useState, useRef, useEffect, FormEvent, KeyboardEvent } from "react";
 import {
   Send, Download, FileSpreadsheet, Bot, User,
-  Loader2, ChevronDown, CheckCircle2, AlertCircle,
+  Loader2, ChevronDown, CheckCircle2, AlertCircle, Play,
 } from "lucide-react";
-import { generateTestCases, downloadExcel, downloadZip, GenerateResponse } from "@/lib/api";
+import { generateTestCases, downloadExcel, downloadZip, runPlaywright, GenerateResponse, PlaywrightResponse } from "@/lib/api";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -123,6 +123,9 @@ function AssistantCard({
 }) {
   const [downloading, setDownloading] = useState(false);
   const [downloadingZip, setDownloadingZip] = useState(false);
+  const [runningPlaywright, setRunningPlaywright] = useState(false);
+  const [playwrightData, setPlaywrightData] = useState<PlaywrightResponse | null>(null);
+  const [playwrightError, setPlaywrightError] = useState<string | null>(null);
 
   if (message.error) {
     return (
@@ -158,6 +161,21 @@ function AssistantCard({
     }
   };
 
+  const handleRunPlaywright = async () => {
+    if (!message.data) return;
+    setRunningPlaywright(true);
+    setPlaywrightData(null);
+    setPlaywrightError(null);
+    try {
+      const result = await runPlaywright(message.data.final_output);
+      setPlaywrightData(result);
+    } catch (err: unknown) {
+      setPlaywrightError(err instanceof Error ? err.message : "Playwright run failed");
+    } finally {
+      setRunningPlaywright(false);
+    }
+  };
+
   return (
     <div className="flex gap-3 items-start">
       <Avatar />
@@ -188,6 +206,13 @@ function AssistantCard({
                   <ReviewBadge reviewFeedback={message.data.review_feedback} />
                 </div>
                 <ScenarioBreakdown finalOutput={message.data.final_output} />
+                {playwrightError && (
+                  <div className="mt-3 flex items-center gap-2 text-red-600 text-xs bg-red-50 px-3 py-2 rounded-lg border border-red-200">
+                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                    {playwrightError}
+                  </div>
+                )}
+                {playwrightData && <PlaywrightPanel data={playwrightData} />}
               </>
             )}
           </div>
@@ -217,9 +242,97 @@ function AssistantCard({
                 )}
                 {downloadingZip ? "Packaging…" : "Download All"}
               </button>
+              <button
+                onClick={handleRunPlaywright}
+                disabled={runningPlaywright}
+                className="flex items-center gap-2 px-3.5 py-2 bg-violet-600 hover:bg-violet-700 active:bg-violet-800 disabled:bg-violet-300 text-white text-sm font-medium rounded-xl transition-colors shadow-sm"
+              >
+                {runningPlaywright ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Play className="w-4 h-4" />
+                )}
+                {runningPlaywright ? "Running…" : "Run Playwright"}
+              </button>
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function PlaywrightPanel({ data }: { data: PlaywrightResponse }) {
+  const [tab, setTab] = useState<"results" | "code" | "output">("results");
+
+  let review: Record<string, unknown> = {};
+  try { review = JSON.parse(data.review); } catch {}
+
+  const { execution_results: ex } = data;
+  const statusColors: Record<string, string> = {
+    Pass:    "bg-green-100 text-green-700 border-green-300",
+    Partial: "bg-yellow-100 text-yellow-700 border-yellow-300",
+    Fail:    "bg-red-100 text-red-700 border-red-300",
+  };
+  const overallStatus = (review.overall_status as string) || (ex.execution_error ? "Fail" : "Pass");
+
+  return (
+    <div className="mt-4 border border-gray-200 rounded-xl overflow-hidden text-xs">
+      {/* header */}
+      <div className="flex items-center justify-between bg-gray-50 px-3 py-2 border-b border-gray-200">
+        <span className="font-semibold text-gray-700 flex items-center gap-1.5">
+          <Play className="w-3.5 h-3.5 text-violet-600" /> Playwright Results
+        </span>
+        <span className={`px-2 py-0.5 rounded-full font-semibold border ${statusColors[overallStatus] ?? "bg-gray-100 text-gray-600 border-gray-300"}`}>
+          {overallStatus} · {ex.passed}/{ex.total} passed
+        </span>
+      </div>
+
+      {/* tabs */}
+      <div className="flex border-b border-gray-200 bg-white">
+        {(["results", "code", "output"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`px-3 py-1.5 capitalize font-medium transition-colors ${tab === t ? "border-b-2 border-violet-500 text-violet-700" : "text-gray-500 hover:text-gray-700"}`}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      <div className="bg-white p-3 max-h-60 overflow-y-auto">
+        {tab === "results" && (
+          <div className="space-y-1.5">
+            {ex.execution_error && (
+              <p className="text-red-600 bg-red-50 px-2 py-1 rounded">{ex.execution_error}</p>
+            )}
+            {review.summary && (
+              <p className="text-gray-600 mb-2">{review.summary as string}</p>
+            )}
+            {ex.tests.map((t, i) => (
+              <div key={i} className={`flex items-start gap-2 px-2 py-1 rounded ${t.outcome === "passed" ? "bg-green-50" : "bg-red-50"}`}>
+                <span className={`font-bold mt-0.5 ${t.outcome === "passed" ? "text-green-600" : "text-red-600"}`}>
+                  {t.outcome === "passed" ? "✓" : "✗"}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <span className="font-mono text-gray-800">{t.name}</span>
+                  <span className="ml-2 text-gray-400">{t.duration}s</span>
+                  {t.message && <p className="text-red-500 mt-0.5 truncate">{t.message}</p>}
+                </div>
+              </div>
+            ))}
+            {ex.tests.length === 0 && !ex.execution_error && (
+              <p className="text-gray-400 italic">No test results recorded.</p>
+            )}
+          </div>
+        )}
+        {tab === "code" && (
+          <pre className="font-mono text-gray-700 whitespace-pre-wrap break-all">{data.test_code}</pre>
+        )}
+        {tab === "output" && (
+          <pre className="font-mono text-gray-600 whitespace-pre-wrap break-all">{ex.raw_output || "(no output)"}</pre>
+        )}
       </div>
     </div>
   );

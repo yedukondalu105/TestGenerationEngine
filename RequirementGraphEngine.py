@@ -49,14 +49,14 @@ class RequirementGraphEngine:
         # Initialize LLM
         self.llm = ChatOpenAI(temperature=0, model="gpt-4o-mini")
         
-        # Connect to Neo4j
+        # Connect to Neo4j (refresh_schema=False avoids the APOC dependency)
         self.kg = Neo4jGraph(
             url=os.getenv("NEO4J_URI"),
             username=os.getenv("NEO4J_USERNAME"),
             password=os.getenv("NEO4J_PASSWORD"),
-            database=os.getenv("NEO4J_DATABASE")
+            database=os.getenv("NEO4J_DATABASE"),
+            refresh_schema=False,
         )
-        self.kg.refresh_schema()
         logging.getLogger("neo4j").setLevel(logging.ERROR)
         logging.getLogger("neo4j.bolt").setLevel(logging.ERROR)
         logging.getLogger("neo4j.driver").setLevel(logging.ERROR)
@@ -97,6 +97,9 @@ class RequirementGraphEngine:
     def _build_graph_from_confluence(self):
         """Build knowledge graph from Confluence pages."""
         self.kg.query("MATCH (n) DETACH DELETE n")
+        # add_graph_documents internally calls refresh_schema() which requires APOC.
+        # We don't need schema introspection for ingestion, so patch it to a no-op.
+        self.kg.refresh_schema = lambda: None
         
         confluence_loader = ConfluenceLoader(
             url=os.getenv("CONFLUENCE_URL", "https://upalyk.atlassian.net/wiki"),
@@ -284,9 +287,19 @@ Answer:"""
 
 
 if __name__ == "__main__":
-    engine = RequirementGraphEngine(rebuild=False)
-    answer = engine.ask_question("Give me the list of Error Codes?")
-    print(answer)
+    import argparse
+    parser = argparse.ArgumentParser(description="RequirementGraphEngine CLI")
+    parser.add_argument("--rebuild", action="store_true", help="Wipe and rebuild the Neo4j graph from Confluence")
+    args = parser.parse_args()
+
+    if args.rebuild:
+        print("Rebuilding GraphRAG from Confluence — this will wipe and re-ingest all data...")
+        engine = RequirementGraphEngine(rebuild=True)
+        print("Rebuild complete. Neo4j graph is ready.")
+    else:
+        engine = RequirementGraphEngine(rebuild=False)
+        answer = engine.ask_question("Give me the list of Error Codes?")
+        print(answer)
 
 
 

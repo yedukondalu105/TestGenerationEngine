@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from TestGenerationEngine import build_question_agent_graph
 from excel_generator import generate_excel
 from zip_generator import generate_zip
+from playwright_agent import playwright_codegen_agent, playwright_executor_agent, results_review_agent
 
 app = FastAPI(title="QA Test Cases Generator API")
 
@@ -50,6 +51,10 @@ class DownloadZipRequest(BaseModel):
     retrieved_context: str = ""
     structured_requirements: str = ""
     dependency_mapping: str = ""
+
+
+class PlaywrightRunRequest(BaseModel):
+    final_output: str
 
 
 @app.post("/api/generate")
@@ -141,3 +146,27 @@ async def download_zip(request: DownloadZipRequest):
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.post("/api/playwright-run")
+async def playwright_run(request: PlaywrightRunRequest):
+    try:
+        test_code = await asyncio.to_thread(playwright_codegen_agent, request.final_output)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Code generation failed: {e}")
+
+    try:
+        execution_results = await asyncio.to_thread(playwright_executor_agent, test_code)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Test execution failed: {e}")
+
+    try:
+        review = await asyncio.to_thread(results_review_agent, request.final_output, execution_results)
+    except Exception as e:
+        review = "{}"
+
+    return {
+        "test_code": test_code,
+        "execution_results": execution_results,
+        "review": review,
+    }
