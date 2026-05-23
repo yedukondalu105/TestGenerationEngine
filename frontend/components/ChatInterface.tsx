@@ -307,8 +307,8 @@ function PlaywrightPanel({ data }: { data: PlaywrightResponse }) {
             {ex.execution_error && (
               <p className="text-red-600 bg-red-50 px-2 py-1 rounded">{ex.execution_error}</p>
             )}
-            {review.summary && (
-              <p className="text-gray-600 mb-2">{review.summary as string}</p>
+            {typeof review.summary === "string" && (
+              <p className="text-gray-600 mb-2">{review.summary}</p>
             )}
             {ex.tests.map((t, i) => (
               <div key={i} className={`flex items-start gap-2 px-2 py-1 rounded ${t.outcome === "passed" ? "bg-green-50" : "bg-red-50"}`}>

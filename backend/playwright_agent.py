@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import tempfile
 import subprocess
@@ -10,36 +11,100 @@ load_dotenv(override=True)
 
 APP_URL = os.getenv("PLAYWRIGHT_APP_URL", "")
 
-llm_codegen = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
+llm_codegen = ChatOpenAI(model="gpt-4o", temperature=0.1)
 llm_review  = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
 
 _CODEGEN_PROMPT = """You are a senior Playwright test automation engineer.
 
-Convert the Gherkin BDD scenarios below into pytest-playwright Python test code.
+Your task: convert EVERY Gherkin BDD scenario below into a COMPLETE, FULLY IMPLEMENTED pytest-playwright test.
 
-Target application URL: {app_url}
-OrangeHRM demo credentials: username=Admin, password=admin123
+CRITICAL RULE: Every test MUST implement ALL Given/When/Then steps. A test that only logs in and does nothing else is WRONG.
+After login, each test must navigate to the correct module and perform the FULL sequence of UI actions described by the scenario steps.
 
-Common OrangeHRM selectors:
-- Username input : page.get_by_placeholder("Username")
-- Password input : page.get_by_placeholder("Password")
-- Login button   : page.get_by_role("button", name="Login")
-- Dashboard URL  : contains /dashboard/index after login
+════════════════════════════════════════════════════════════
+TARGET APP : {app_url}
+CREDENTIALS: username=Admin  password=admin123
+════════════════════════════════════════════════════════════
 
-Coding rules:
-- Each scenario → one `def test_<snake_case_scenario_name>(page: Page):` function
-- Start every test: page.goto("{app_url}") then page.wait_for_load_state("networkidle")
-- Use locators: page.locator(), page.get_by_label(), page.get_by_role(), page.get_by_placeholder(), page.get_by_text()
-- Interactions: page.fill(), page.click(), page.select_option()
-- Assertions: expect(page).to_have_url(...), expect(locator).to_be_visible(), expect(locator).to_have_text(), expect(locator).to_contain_text()
-- For any login step always use the credentials above
-- Each test is fully independent — starts fresh from the app URL
-- Only fixtures allowed: `page`
-- Top imports: `import pytest` and `from playwright.sync_api import Page, expect`
-- Return ONLY valid Python. No markdown fences. No prose.
+━━━ LOGIN HELPER (use at the start of every test) ━━━
+    page.goto("{app_url}")
+    page.wait_for_load_state("networkidle")
+    page.get_by_placeholder("Username").fill("Admin")
+    page.get_by_placeholder("Password").fill("admin123")
+    page.get_by_role("button", name="Login").click()
+    page.wait_for_url("**/dashboard/index")
 
-Gherkin Scenarios JSON:
+━━━ ORANGEHRM NAVIGATION SELECTORS ━━━
+Left sidebar menu items (click to open module):
+    page.get_by_role("link", name="Admin")
+    page.get_by_role("link", name="PIM")
+    page.get_by_role("link", name="Leave")
+    page.get_by_role("link", name="Time")
+    page.get_by_role("link", name="Recruitment")
+    page.get_by_role("link", name="My Info")
+    page.get_by_role("link", name="Performance")
+    page.get_by_role("link", name="Dashboard")
+    page.get_by_role("link", name="Directory")
+    page.get_by_role("link", name="Maintenance")
+    page.get_by_role("link", name="Buzz")
+
+Sub-menu items (appear after clicking main menu):
+    page.get_by_role("menuitem", name="User Management")
+    page.get_by_role("menuitem", name="Job")
+    page.get_by_role("menuitem", name="Organization")
+    page.get_by_role("menuitem", name="Qualifications")
+    page.get_by_role("menuitem", name="Nationalities")
+    page.get_by_role("menuitem", name="Configuration")
+
+━━━ COMMON ORANGEHRM UI PATTERNS ━━━
+Search/filter forms:
+    page.get_by_role("button", name="Search").click()
+    page.get_by_role("button", name="Reset").click()
+
+Add / Save / Delete buttons:
+    page.get_by_role("button", name="Add").click()
+    page.get_by_role("button", name="Save").click()
+    page.get_by_role("button", name="Delete").click()
+    page.get_by_role("button", name="Yes, Delete").click()   # confirmation dialog
+
+Input fields (OrangeHRM uses oxd-input):
+    page.locator("input.oxd-input").nth(0).fill("value")
+    page.get_by_role("textbox", name="First Name").fill("John")
+    page.get_by_role("textbox", name="Last Name").fill("Doe")
+
+Dropdowns (OrangeHRM custom select):
+    page.locator(".oxd-select-text").nth(0).click()
+    page.get_by_role("option", name="Option Text").click()
+
+Tables / records:
+    page.locator(".oxd-table-row").nth(1)          # first data row
+    page.locator(".oxd-table-cell-actions").nth(0) # action buttons on first row
+    page.get_by_role("button", name="Edit").first.click()
+
+Toast / success messages:
+    expect(page.locator(".oxd-toast")).to_be_visible()
+    expect(page.locator(".oxd-toast--success")).to_be_visible()
+
+Assertions:
+    expect(page).to_have_url(re.compile(r".*/pim/.*"))
+    expect(page.get_by_role("heading", name="Add Employee")).to_be_visible()
+    expect(page.locator(".oxd-table-row")).to_have_count(...)
+
+━━━ CODING RULES ━━━
+- Each Gherkin scenario → one `def test_<snake_case_scenario_name>(page: Page):` function
+- EVERY test must perform the FULL sequence from the scenario steps — not just login
+- Use page.wait_for_load_state("networkidle") after navigation clicks
+- Use page.wait_for_timeout(1000) sparingly when a dynamic element needs to appear
+- Wrap assertions in expect() — never use assert statements
+- Each test is fully independent (starts from the app URL, does full login)
+- Only the `page` fixture is allowed
+- Top of file imports ONLY: `import re`, `import pytest`, `from playwright.sync_api import Page, expect`
+- Return ONLY valid Python. No markdown fences, no prose, no comments.
+
+════════════════════════════════════════════════════════════
+GHERKIN SCENARIOS JSON (implement EVERY scenario fully):
 {gherkin_json}
+════════════════════════════════════════════════════════════
 """
 
 
@@ -77,12 +142,13 @@ def playwright_executor_agent(test_code: str) -> dict:
             f.write(test_code)
 
         cmd = [
-            "python", "-m", "pytest", test_file,
+            sys.executable, "-m", "pytest", test_file,
             "--json-report",
             f"--json-report-file={report_file}",
             "--tb=short",
             "-v",
             "--browser", "chromium",
+            "--headed",
         ]
 
         try:

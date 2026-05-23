@@ -3,6 +3,7 @@ import os
 import io
 import json
 import asyncio
+import traceback
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -153,20 +154,23 @@ async def playwright_run(request: PlaywrightRunRequest):
     try:
         test_code = await asyncio.to_thread(playwright_codegen_agent, request.final_output)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Code generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Code generation failed: {traceback.format_exc()}")
 
     try:
         execution_results = await asyncio.to_thread(playwright_executor_agent, test_code)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Test execution failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Test execution failed: {traceback.format_exc()}")
 
     try:
         review = await asyncio.to_thread(results_review_agent, request.final_output, execution_results)
     except Exception as e:
         review = "{}"
 
-    return {
-        "test_code": test_code,
-        "execution_results": execution_results,
-        "review": review,
-    }
+    try:
+        return {
+            "test_code": test_code,
+            "execution_results": execution_results,
+            "review": review,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Response serialization failed: {traceback.format_exc()}")
