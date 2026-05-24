@@ -115,23 +115,51 @@ Checkbox         : self.page.locator(".oxd-checkbox-input").nth(N)
 Date input       : self.page.locator("input.oxd-date-input").nth(N)
 
 ━━━ CODING RULES ━━━
-- from base_page import BasePage
+- from pages.base_page import BasePage
 - from playwright.sync_api import Page, expect
 - Inherit: class {class_name}(BasePage)
 - __init__(self, page: Page): call super().__init__(page), define all locators as self.xxx
-- Do NOT redefine login() — it's on BasePage
-- navigate(): call self.navigate_to("<MainMenu>") then click sub-menus if needed,
-  call self.page.wait_for_load_state("networkidle")
 - One method per meaningful action (add_record, search, edit_record, delete_record, etc.)
 - Methods should use self.page.wait_for_load_state("networkidle") after actions that navigate
+- Assertion methods use expect() internally and return None, e.g.:
+    def assert_success_toast(self): expect(self.page.locator(".oxd-toast--success")).to_be_visible()
+    def assert_error_message(self): expect(self.page.locator(".oxd-alert-content")).to_be_visible()
+    def assert_on_dashboard(self): expect(self.page).to_have_url(re.compile(r".*/dashboard/index"))
+- NEVER return booleans — always use expect() internally for assertions
+- Add import re at the top
 - Return ONLY valid Python. No markdown fences. No prose. No comments.
+
+━━━ CRITICAL: LOGIN / AUTHENTICATION PAGES ━━━
+Detect whether the scenarios are testing the LOGIN PAGE ITSELF (credentials, validation, access control).
+If YES — the test must interact with the login form, so:
+  - ALWAYS override BOTH login() AND navigate() — every login-page POM must have them:
+        def login(self):
+            self.goto_app()
+        def navigate(self):
+            self.page.wait_for_load_state("networkidle")
+  - Provide action methods for the form: provide_username(text), provide_password(text), attempt_login()
+  - Provide assertion methods: assert_on_dashboard(), assert_error_message(), assert_invalid_credentials(),
+    assert_session_expired(), assert_access_denied()
+  - OrangeHRM shows TWO kinds of errors — use the correct locator for each:
+      Empty field → inline "Required" text → locator: ".oxd-input-field-error-message"
+      Wrong credentials / access denied → alert banner → locator: ".oxd-alert-content"
+  - assert_error_message():       expect(self.page.locator(".oxd-input-field-error-message").first).to_be_visible()
+  - assert_invalid_credentials(): expect(self.page.locator(".oxd-alert-content")).to_be_visible()
+  - assert_session_expired():     expect(self.page.locator(".oxd-alert-content")).to_be_visible()
+  - assert_access_denied():       expect(self.page.locator(".oxd-alert-content")).to_be_visible()
+  - assert_on_dashboard():        expect(self.page).to_have_url(re.compile(r".*/dashboard/index"))
+  - NEVER use to_have_text() for any of these assertions
+
+If NO (scenarios test a module AFTER login) — do NOT override login():
+  - Call self.login() (inherited from BasePage) which does full Admin login
+  - navigate(): call self.navigate_to("<MainMenu>") then click sub-menus if needed
 
 Scenarios to model:
 {gherkin_json}
 """
 
 def page_object_agent(gherkin_json: str, use_case: str, class_name: str) -> str:
-    prompt = _POM_PROMPT.format(app_url=APP_URL, use_case=use_case, class_name=class_name)
+    prompt = _POM_PROMPT.format(app_url=APP_URL, use_case=use_case, class_name=class_name, gherkin_json=gherkin_json)
     result = llm_codegen.invoke([HumanMessage(content=prompt)])
     return _strip_fences(result.content)
 
@@ -144,6 +172,17 @@ Generate a COMPLETE pytest test file implementing ALL Gherkin scenarios using th
 POM class  : {class_name}
 POM import : from pages.{module_name} import {class_name}
 
+━━━ THE ACTUAL POM SOURCE CODE (use ONLY the methods defined here) ━━━
+{page_content}
+━━━ END OF POM SOURCE ━━━
+
+━━━ TEST CREDENTIALS (use these EXACT strings — no placeholders) ━━━
+Valid login  : username="Admin"    password="admin123"
+Invalid login: username="WrongUser" password="wrongpass"
+For empty-field tests use "" for the empty field and "Admin"/"admin123" for the other.
+Successful login redirects to the dashboard — it does NOT show a toast — so always use
+assert_on_dashboard() for "login succeeds" assertions, NEVER assert_success_toast().
+
 ━━━ STRUCTURE RULES ━━━
 Imports (top of file, exactly these):
     import re
@@ -154,28 +193,32 @@ Imports (top of file, exactly these):
 Each scenario → one function:
     def test_<snake_case_scenario_name>(page: Page):
         obj = {class_name}(page)
-        obj.login()
-        obj.navigate()
-        # ... use POM methods to implement all When/Then steps
+        obj.login()      # MANDATORY — always first
+        obj.navigate()   # MANDATORY — always second
+        # call the POM methods listed above to implement the When/Then steps
 
 Rules:
-- EVERY scenario must be fully implemented using POM methods — no raw Playwright calls in tests
-- Every test calls obj.login() then obj.navigate() at the start
-- Use expect() for ALL assertions — never use assert statements
+- ONLY call methods that actually exist in the POM source above — invent NOTHING
+- Every test MUST start with obj.login() then obj.navigate() — no exceptions
+- Use @pytest.mark.skip(reason="...") for scenarios that require accounts/state not available
+  (non-admin users, session expiry, etc.) — do not attempt to implement them
+- Assertion methods on the POM already call expect() internally — just call them: obj.assert_xxx()
+- Do NOT call expect() on boolean values or method return values — only on Locator objects
 - Each test is fully independent
-- CRITICAL: Do NOT skip any scenario. Implement all {scenario_count} scenarios.
+- CRITICAL: implement all {scenario_count} scenarios. Do NOT skip any without a reason.
 - Return ONLY valid Python. No markdown fences. No prose. No comments.
 
 Gherkin scenarios:
 {gherkin_json}
 """
 
-def test_suite_agent(gherkin_json: str, use_case: str, class_name: str, module_name: str, scenario_count: int) -> str:
+def test_suite_agent(gherkin_json: str, use_case: str, class_name: str, module_name: str, scenario_count: int, page_content: str) -> str:
     prompt = _TEST_PROMPT.format(
         use_case=use_case,
         class_name=class_name,
         module_name=module_name,
         scenario_count=scenario_count,
+        page_content=page_content,
         gherkin_json=gherkin_json,
     )
     result = llm_codegen.invoke([HumanMessage(content=prompt)])
@@ -357,7 +400,7 @@ def generate_and_run_suite(gherkin_json: str) -> dict:
 
     feature_content = feature_file_agent(gherkin_json, use_case)
     page_content    = page_object_agent(gherkin_json, use_case, cls_name)
-    test_content    = test_suite_agent(gherkin_json, use_case, cls_name, mod_name, len(scenarios))
+    test_content    = test_suite_agent(gherkin_json, use_case, cls_name, mod_name, len(scenarios), page_content)
 
     suite_id = save_suite_files(use_case, slug, feature_content, page_content, test_content, len(scenarios))
 
