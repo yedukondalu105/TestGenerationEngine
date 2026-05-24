@@ -65,7 +65,38 @@ export interface PlaywrightExecutionResults {
 }
 
 export interface PlaywrightResponse {
-  test_code: string;
+  suite_id: string;
+  use_case: string;
+  feature_content: string;
+  page_content: string;
+  test_content: string;
+  execution_results: PlaywrightExecutionResults;
+  review: string;
+}
+
+export interface TestSuiteLastResults {
+  passed: number;
+  failed: number;
+  total: number;
+  overall_status: string;
+}
+
+export interface TestSuite {
+  id: string;
+  use_case: string;
+  slug: string;
+  created_at: string;
+  scenario_count: number;
+  feature_file: string;
+  page_file: string;
+  test_file: string;
+  last_run_at: string | null;
+  last_results: TestSuiteLastResults | null;
+}
+
+export interface RerunResponse {
+  suite_id: string;
+  use_case: string;
   execution_results: PlaywrightExecutionResults;
   review: string;
 }
@@ -79,6 +110,22 @@ export async function runPlaywright(final_output: string): Promise<PlaywrightRes
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || `Playwright run failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function getTestSuites(): Promise<TestSuite[]> {
+  const res = await fetch("/api/test-suites");
+  if (!res.ok) throw new Error("Failed to load test suites");
+  const data = await res.json();
+  return data.suites ?? [];
+}
+
+export async function rerunTestSuite(suiteId: string): Promise<RerunResponse> {
+  const res = await fetch(`/api/test-suites/${suiteId}/run`, { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `Rerun failed (${res.status})`);
   }
   return res.json();
 }

@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from TestGenerationEngine import build_question_agent_graph
 from excel_generator import generate_excel
 from zip_generator import generate_zip
-from playwright_agent import playwright_codegen_agent, playwright_executor_agent, results_review_agent
+from playwright_agent import generate_and_run_suite, rerun_suite, list_suites
 
 app = FastAPI(title="QA Test Cases Generator API")
 
@@ -56,6 +56,10 @@ class DownloadZipRequest(BaseModel):
 
 class PlaywrightRunRequest(BaseModel):
     final_output: str
+
+
+class PlaywrightRerunRequest(BaseModel):
+    suite_id: str
 
 
 @app.post("/api/generate")
@@ -152,25 +156,26 @@ async def download_zip(request: DownloadZipRequest):
 @app.post("/api/playwright-run")
 async def playwright_run(request: PlaywrightRunRequest):
     try:
-        test_code = await asyncio.to_thread(playwright_codegen_agent, request.final_output)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Code generation failed: {traceback.format_exc()}")
+        result = await asyncio.to_thread(generate_and_run_suite, request.final_output)
+        return result
+    except Exception:
+        raise HTTPException(status_code=500, detail=traceback.format_exc())
 
-    try:
-        execution_results = await asyncio.to_thread(playwright_executor_agent, test_code)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Test execution failed: {traceback.format_exc()}")
 
+@app.get("/api/test-suites")
+async def get_test_suites():
     try:
-        review = await asyncio.to_thread(results_review_agent, request.final_output, execution_results)
-    except Exception as e:
-        review = "{}"
+        return {"suites": list_suites()}
+    except Exception:
+        raise HTTPException(status_code=500, detail=traceback.format_exc())
 
+
+@app.post("/api/test-suites/{suite_id}/run")
+async def run_test_suite(suite_id: str):
     try:
-        return {
-            "test_code": test_code,
-            "execution_results": execution_results,
-            "review": review,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Response serialization failed: {traceback.format_exc()}")
+        result = await asyncio.to_thread(rerun_suite, suite_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail=traceback.format_exc())
