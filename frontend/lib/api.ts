@@ -101,6 +101,27 @@ export interface RerunResponse {
   review: string;
 }
 
+export interface GenerateSuiteResponse {
+  suite_id: string;
+  use_case: string;
+  feature_content: string;
+  page_content: string;
+  test_content: string;
+}
+
+export async function generatePlaywrightTests(final_output: string): Promise<GenerateSuiteResponse> {
+  const res = await fetch("/api/playwright-generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ final_output }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `Test generation failed (${res.status})`);
+  }
+  return res.json();
+}
+
 export async function runPlaywright(final_output: string): Promise<PlaywrightResponse> {
   const res = await fetch("/api/playwright-run", {
     method: "POST",

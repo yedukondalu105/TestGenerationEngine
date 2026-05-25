@@ -385,6 +385,34 @@ Return ONLY valid JSON. No markdown fences. No prose.
 
 # ─── Main orchestration ───────────────────────────────────────────────────────
 
+def generate_suite_only(gherkin_json: str) -> dict:
+    """Generate feature + POM + tests → save to disk. Does NOT run the tests."""
+    try:
+        parsed = json.loads(gherkin_json)
+    except Exception:
+        parsed = {}
+
+    use_case = parsed.get("use_case", "test_suite")
+    scenarios = parsed.get("gherkin_scenarios", [])
+    slug      = _slugify(use_case)
+    cls_name  = _class_name(slug)
+    mod_name  = f"{slug}_page"
+
+    feature_content = feature_file_agent(gherkin_json, use_case)
+    page_content    = page_object_agent(gherkin_json, use_case, cls_name)
+    test_content    = test_suite_agent(gherkin_json, use_case, cls_name, mod_name, len(scenarios), page_content)
+
+    suite_id = save_suite_files(use_case, slug, feature_content, page_content, test_content, len(scenarios))
+
+    return {
+        "suite_id":        suite_id,
+        "use_case":        use_case,
+        "feature_content": feature_content,
+        "page_content":    page_content,
+        "test_content":    test_content,
+    }
+
+
 def generate_and_run_suite(gherkin_json: str) -> dict:
     """Generate feature + POM + tests → save to disk → run → return full results."""
     try:

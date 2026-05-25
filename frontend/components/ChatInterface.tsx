@@ -7,9 +7,9 @@ import {
   Play, FlaskConical, X, RefreshCw, Clock, ChevronRight,
 } from "lucide-react";
 import {
-  generateTestCases, downloadExcel, downloadZip, runPlaywright,
-  getTestSuites, rerunTestSuite,
-  GenerateResponse, PlaywrightResponse, RerunResponse, TestSuite,
+  generateTestCases, downloadExcel, downloadZip,
+  generatePlaywrightTests, getTestSuites, rerunTestSuite,
+  GenerateResponse, GenerateSuiteResponse, PlaywrightResponse, RerunResponse, TestSuite,
 } from "@/lib/api";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -328,22 +328,67 @@ function SavedSuitesPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
+// ─── Suite Generated Panel ────────────────────────────────────────────────────
+
+function SuiteGeneratedPanel({ data, onViewSuites }: { data: GenerateSuiteResponse; onViewSuites: () => void }) {
+  const [tab, setTab] = useState<"feature" | "pom" | "code">("feature");
+
+  const tabs: { key: typeof tab; label: string }[] = [
+    { key: "feature", label: "Feature" },
+    { key: "pom",     label: "Page Object" },
+    { key: "code",    label: "Test Code" },
+  ];
+
+  return (
+    <div className="mt-4 border border-green-200 rounded-xl overflow-hidden text-xs">
+      <div className="flex items-center justify-between bg-green-50 px-3 py-2 border-b border-green-200">
+        <span className="font-semibold text-green-700 flex items-center gap-1.5">
+          <CheckCircle2 className="w-3.5 h-3.5" /> Suite saved — {data.use_case}
+        </span>
+        <button
+          onClick={onViewSuites}
+          className="flex items-center gap-1 text-violet-600 hover:text-violet-800 font-semibold text-xs transition-colors"
+        >
+          View in Saved Test Suites <ChevronRight className="w-3 h-3" />
+        </button>
+      </div>
+
+      <div className="flex border-b border-gray-200 bg-white overflow-x-auto">
+        {tabs.map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)}
+            className={`px-3 py-1.5 whitespace-nowrap font-medium transition-colors ${tab === t.key ? "border-b-2 border-violet-500 text-violet-700" : "text-gray-500 hover:text-gray-700"}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="bg-white p-3 max-h-72 overflow-y-auto">
+        {tab === "feature" && <pre className="font-mono text-gray-700 whitespace-pre-wrap break-all">{data.feature_content}</pre>}
+        {tab === "pom"     && <pre className="font-mono text-gray-700 whitespace-pre-wrap break-all">{data.page_content}</pre>}
+        {tab === "code"    && <pre className="font-mono text-gray-700 whitespace-pre-wrap break-all">{data.test_content}</pre>}
+      </div>
+    </div>
+  );
+}
+
 // ─── Assistant Card ───────────────────────────────────────────────────────────
 
 function AssistantCard({
   message,
   onDownload,
   onDownloadZip,
+  onOpenSuites,
 }: {
   message: Message;
   onDownload: (data: GenerateResponse) => Promise<void>;
   onDownloadZip: (data: GenerateResponse) => Promise<void>;
+  onOpenSuites: () => void;
 }) {
-  const [downloading, setDownloading]         = useState(false);
-  const [downloadingZip, setDownloadingZip]   = useState(false);
-  const [runningPlaywright, setRunningPlaywright] = useState(false);
-  const [playwrightData, setPlaywrightData]   = useState<PlaywrightResponse | null>(null);
-  const [playwrightError, setPlaywrightError] = useState<string | null>(null);
+  const [downloading, setDownloading]       = useState(false);
+  const [downloadingZip, setDownloadingZip] = useState(false);
+  const [generating, setGenerating]         = useState(false);
+  const [suiteData, setSuiteData]           = useState<GenerateSuiteResponse | null>(null);
+  const [suiteError, setSuiteError]         = useState<string | null>(null);
 
   if (message.error) {
     return (
@@ -371,18 +416,18 @@ function AssistantCard({
     try { await onDownloadZip(message.data); } finally { setDownloadingZip(false); }
   };
 
-  const handleRunPlaywright = async () => {
+  const handleGenerateTests = async () => {
     if (!message.data) return;
-    setRunningPlaywright(true);
-    setPlaywrightData(null);
-    setPlaywrightError(null);
+    setGenerating(true);
+    setSuiteData(null);
+    setSuiteError(null);
     try {
-      const result = await runPlaywright(message.data.final_output);
-      setPlaywrightData(result);
+      const result = await generatePlaywrightTests(message.data.final_output);
+      setSuiteData(result);
     } catch (err: unknown) {
-      setPlaywrightError(err instanceof Error ? err.message : "Test generation failed");
+      setSuiteError(err instanceof Error ? err.message : "Test generation failed");
     } finally {
-      setRunningPlaywright(false);
+      setGenerating(false);
     }
   };
 
@@ -408,12 +453,12 @@ function AssistantCard({
                   <ReviewBadge reviewFeedback={message.data.review_feedback} />
                 </div>
                 <ScenarioBreakdown finalOutput={message.data.final_output} />
-                {playwrightError && (
+                {suiteError && (
                   <div className="mt-3 flex items-center gap-2 text-red-600 text-xs bg-red-50 px-3 py-2 rounded-lg border border-red-200">
-                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> {playwrightError}
+                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> {suiteError}
                   </div>
                 )}
-                {playwrightData && <PlaywrightResultsPanel data={playwrightData} />}
+                {suiteData && <SuiteGeneratedPanel data={suiteData} onViewSuites={onOpenSuites} />}
               </>
             )}
           </div>
@@ -430,10 +475,10 @@ function AssistantCard({
                 {downloadingZip ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                 {downloadingZip ? "Packaging…" : "Download All"}
               </button>
-              <button onClick={handleRunPlaywright} disabled={runningPlaywright}
+              <button onClick={handleGenerateTests} disabled={generating || !!suiteData}
                 className="flex items-center gap-2 px-3.5 py-2 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white text-sm font-medium rounded-xl transition-colors shadow-sm">
-                {runningPlaywright ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-                {runningPlaywright ? "Generating…" : "Generate & Run Tests"}
+                {generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <FlaskConical className="w-4 h-4" />}
+                {generating ? "Generating…" : suiteData ? "Tests Generated" : "Generate Tests"}
               </button>
             </div>
           )}
@@ -583,6 +628,7 @@ export default function ChatInterface() {
               <AssistantCard key={msg.id} message={msg}
                 onDownload={async d => { await downloadExcel(d); }}
                 onDownloadZip={async d => { await downloadZip(d); }}
+                onOpenSuites={() => setSuitesOpen(true)}
               />
             )
           )}

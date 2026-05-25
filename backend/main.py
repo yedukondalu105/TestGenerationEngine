@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from TestGenerationEngine import build_question_agent_graph
 from excel_generator import generate_excel
 from zip_generator import generate_zip
-from playwright_agent import generate_and_run_suite, rerun_suite, list_suites
+from playwright_agent import generate_suite_only, generate_and_run_suite, rerun_suite, list_suites
 
 app = FastAPI(title="QA Test Cases Generator API")
 
@@ -151,6 +151,15 @@ async def download_zip(request: DownloadZipRequest):
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@app.post("/api/playwright-generate")
+async def playwright_generate(request: PlaywrightRunRequest):
+    try:
+        result = await asyncio.to_thread(generate_suite_only, request.final_output)
+        return result
+    except Exception:
+        raise HTTPException(status_code=500, detail=traceback.format_exc())
 
 
 @app.post("/api/playwright-run")
