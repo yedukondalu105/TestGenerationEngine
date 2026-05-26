@@ -299,14 +299,13 @@ def run_test_file(test_file: Path) -> dict:
         f"--json-report-file={report_file}",
         "--tb=short", "-v",
         "--browser", "chromium",
-        "--headed",
     ]
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=600,
             cwd=str(TESTS_DIR),
         )
         stdout = proc.stdout or ""
