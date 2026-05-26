@@ -224,13 +224,6 @@ function SavedSuitesPanel({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const statusColor = (status: string | undefined) => {
-    if (!status) return "bg-gray-100 text-gray-500";
-    if (status === "Pass") return "bg-green-100 text-green-700";
-    if (status === "Fail") return "bg-red-100 text-red-700";
-    return "bg-yellow-100 text-yellow-700";
-  };
-
   return (
     <div className="fixed inset-0 z-50 flex">
       <div className="absolute inset-0 bg-black/30" onClick={onClose} />
@@ -261,7 +254,7 @@ function SavedSuitesPanel({ onClose }: { onClose: () => void }) {
           {!loading && !error && suites.length === 0 && (
             <div className="text-center text-gray-400 text-sm pt-12">
               <FlaskConical className="w-10 h-10 mx-auto mb-3 opacity-30" />
-              No test suites yet. Generate and run tests from a chat response to save them here.
+              No test suites yet. Generate tests from a chat response, then run them here.
             </div>
           )}
           {!loading && suites.length > 0 && (
@@ -287,9 +280,29 @@ function SavedSuitesPanel({ onClose }: { onClose: () => void }) {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 ml-3 flex-shrink-0">
-                      {suite.last_results && (
-                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${statusColor(suite.last_results.overall_status)}`}>
-                          {suite.last_results.passed}/{suite.last_results.total} passed
+                      {suite.last_results ? (
+                        <div className="flex flex-col items-end gap-1 min-w-[72px]">
+                          <span className="text-xs text-gray-600 font-medium">
+                            {suite.last_results.passed}/{suite.last_results.total} passed
+                          </span>
+                          <div className="w-full h-1.5 rounded-full bg-gray-200 overflow-hidden flex">
+                            {suite.last_results.total > 0 && (
+                              <>
+                                <div
+                                  className="h-full bg-green-500 transition-all"
+                                  style={{ width: `${(suite.last_results.passed / suite.last_results.total) * 100}%` }}
+                                />
+                                <div
+                                  className="h-full bg-red-400 transition-all"
+                                  style={{ width: `${(suite.last_results.failed / suite.last_results.total) * 100}%` }}
+                                />
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 border border-gray-200 whitespace-nowrap">
+                          Never run
                         </span>
                       )}
                       <button
@@ -453,6 +466,34 @@ function AssistantCard({
                   <ReviewBadge reviewFeedback={message.data.review_feedback} />
                 </div>
                 <ScenarioBreakdown finalOutput={message.data.final_output} />
+
+                {/* 3-phase flow tracker */}
+                <div className="mt-3 flex items-center gap-2 text-xs">
+                  <div className="flex items-center gap-1 text-green-700 font-medium">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Scenarios</span>
+                  </div>
+                  <ChevronRight className="w-3 h-3 text-gray-300" />
+                  <div className={`flex items-center gap-1 font-medium ${suiteData ? "text-green-700" : generating ? "text-violet-600" : "text-gray-400"}`}>
+                    {suiteData
+                      ? <CheckCircle2 className="w-3.5 h-3.5" />
+                      : generating
+                        ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        : <div className="w-3.5 h-3.5 rounded-full border-2 border-gray-300" />
+                    }
+                    <span>Tests</span>
+                  </div>
+                  <ChevronRight className="w-3 h-3 text-gray-300" />
+                  <div
+                    className={`flex items-center gap-1 font-medium ${suiteData ? "text-violet-700 cursor-pointer hover:text-violet-900" : "text-gray-400"}`}
+                    onClick={suiteData ? onOpenSuites : undefined}
+                  >
+                    <div className={`w-3.5 h-3.5 rounded-full border-2 ${suiteData ? "border-violet-500" : "border-gray-300"}`} />
+                    <span>Run</span>
+                    {suiteData && <ChevronRight className="w-3 h-3" />}
+                  </div>
+                </div>
+
                 {suiteError && (
                   <div className="mt-3 flex items-center gap-2 text-red-600 text-xs bg-red-50 px-3 py-2 rounded-lg border border-red-200">
                     <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> {suiteError}
@@ -497,17 +538,33 @@ function Avatar({ error = false }: { error?: boolean }) {
 }
 
 function LoadingIndicator() {
+  const [activeStep, setActiveStep] = useState(0);
+
+  useEffect(() => {
+    if (activeStep >= PIPELINE_STEPS.length - 1) return;
+    const t = setTimeout(() => setActiveStep(s => s + 1), 900);
+    return () => clearTimeout(t);
+  }, [activeStep]);
+
   return (
     <div className="flex gap-3 items-start">
       <Avatar />
       <div className="bg-white border border-gray-200 rounded-2xl rounded-tl-none px-5 py-4 shadow-sm">
         <div className="flex items-center gap-2.5 text-gray-500 text-sm">
           <Loader2 className="w-4 h-4 text-blue-600 animate-spin flex-shrink-0" />
-          <span>Running pipeline… this may take a minute</span>
+          <span>Running agentic pipeline… this may take a minute</span>
         </div>
         <div className="mt-3 flex flex-wrap gap-1.5">
-          {PIPELINE_STEPS.map(step => (
-            <span key={step} className="text-xs text-gray-500 bg-gray-100 px-2.5 py-0.5 rounded-full">{step}</span>
+          {PIPELINE_STEPS.map((step, i) => (
+            <span key={step} className={`text-xs px-2.5 py-0.5 rounded-full transition-all duration-500 ${
+              i < activeStep
+                ? "bg-green-100 text-green-700 font-medium"
+                : i === activeStep
+                  ? "bg-blue-100 text-blue-700 font-semibold ring-1 ring-blue-300"
+                  : "bg-gray-100 text-gray-400"
+            }`}>
+              {i < activeStep ? "✓ " : ""}{step}
+            </span>
           ))}
         </div>
       </div>
@@ -547,7 +604,7 @@ export default function ChatInterface() {
       const data = await generateTestCases(q);
       const botMsg: Message = {
         id: crypto.randomUUID(), role: "assistant",
-        content: `Generated ${data.scenario_count} BDD scenarios for "${data.use_case || q}". Click Generate & Run Tests to create the Cucumber framework, Page Object Model, and execute against the app.`,
+        content: `Generated ${data.scenario_count} BDD scenarios for "${data.use_case || q}". Click Generate Tests to create the Playwright POM suite, then run it from Saved Test Suites.`,
         data, timestamp: new Date(),
       };
       setMessages(prev => [...prev, botMsg]);
@@ -572,12 +629,12 @@ export default function ChatInterface() {
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-6 py-3.5 flex items-center justify-between shadow-sm flex-shrink-0">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center shadow-sm">
-            <FileSpreadsheet className="w-5 h-5 text-white" />
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-violet-600 flex items-center justify-center shadow-sm">
+            <Bot className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h1 className="font-semibold text-gray-900 text-base leading-tight">QA Test Cases Generator</h1>
-            <p className="text-xs text-gray-400">Graph RAG · LangGraph · BDD Gherkin · Playwright POM</p>
+            <h1 className="font-semibold text-gray-900 text-base leading-tight">AgenticQAEngine</h1>
+            <p className="text-xs text-gray-400">Agentic Pipeline · Graph RAG · BDD Gherkin · Playwright Automation</p>
           </div>
         </div>
         <button
@@ -594,16 +651,41 @@ export default function ChatInterface() {
       <div className="flex-1 overflow-y-auto px-4 py-6">
         <div className="max-w-3xl mx-auto space-y-5">
           {isEmpty && (
-            <div className="text-center pt-12 pb-4">
-              <div className="w-16 h-16 rounded-2xl bg-blue-100 flex items-center justify-center mx-auto mb-4">
-                <Bot className="w-8 h-8 text-blue-600" />
+            <div className="text-center pt-10 pb-4">
+              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-600 to-violet-600 flex items-center justify-center mx-auto mb-4 shadow-lg">
+                <Bot className="w-8 h-8 text-white" />
               </div>
-              <h2 className="text-xl font-semibold text-gray-800 mb-1">Generate BDD Test Cases</h2>
-              <p className="text-sm text-gray-500 max-w-sm mx-auto">
-                Describe a feature or use case. The pipeline produces Gherkin scenarios, a Cucumber feature file,
-                Page Object Model, and executable Playwright tests.
+              <h2 className="text-xl font-semibold text-gray-800 mb-1">AgenticQAEngine</h2>
+              <p className="text-sm text-gray-500 max-w-sm mx-auto mb-8">
+                Describe a feature to generate BDD scenarios, Playwright tests, and run them end-to-end.
               </p>
-              <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-w-xl mx-auto">
+
+              {/* 3-step workflow diagram */}
+              <div className="flex items-start justify-center gap-3 mb-8 px-4">
+                <div className="flex flex-col items-center gap-2 w-28">
+                  <div className="w-11 h-11 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-base shadow-sm">①</div>
+                  <span className="text-xs font-semibold text-gray-700 text-center">Generate Scenarios</span>
+                  <span className="text-xs text-gray-400 text-center">Gherkin BDD via RAG</span>
+                </div>
+                <div className="mt-3.5 text-gray-300">
+                  <ChevronRight className="w-5 h-5" />
+                </div>
+                <div className="flex flex-col items-center gap-2 w-28">
+                  <div className="w-11 h-11 rounded-full bg-violet-100 flex items-center justify-center text-violet-600 font-bold text-base shadow-sm">②</div>
+                  <span className="text-xs font-semibold text-gray-700 text-center">Generate Tests</span>
+                  <span className="text-xs text-gray-400 text-center">Playwright POM</span>
+                </div>
+                <div className="mt-3.5 text-gray-300">
+                  <ChevronRight className="w-5 h-5" />
+                </div>
+                <div className="flex flex-col items-center gap-2 w-28">
+                  <div className="w-11 h-11 rounded-full bg-green-100 flex items-center justify-center text-green-600 font-bold text-base shadow-sm">③</div>
+                  <span className="text-xs font-semibold text-gray-700 text-center">Run Tests</span>
+                  <span className="text-xs text-gray-400 text-center">Saved Test Suites</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-w-xl mx-auto">
                 {SUGGESTED_PROMPTS.map(p => (
                   <button key={p} onClick={() => send(p)}
                     className="text-left px-4 py-3 bg-white border border-gray-200 hover:border-blue-400 hover:bg-blue-50 rounded-xl text-sm text-gray-700 transition-colors shadow-sm">

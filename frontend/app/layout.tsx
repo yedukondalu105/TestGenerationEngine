@@ -5,8 +5,8 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "QA Test Cases Generator",
-  description: "AI-powered BDD test case generation via Graph RAG + LangGraph",
+  title: "AgenticQAEngine",
+  description: "Agentic pipeline for BDD test generation · Graph RAG · LangGraph · Playwright Automation",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
