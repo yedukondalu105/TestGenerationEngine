@@ -41,3 +41,6 @@ out/
 # OS
 .DS_Store
 Thumbs.db
+
+# Server logs
+logs/
