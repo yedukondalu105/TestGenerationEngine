@@ -1,15 +1,18 @@
 "use client";
 
-import { useState, useRef, useEffect, FormEvent, KeyboardEvent } from "react";
+import { useState, useRef, useEffect, KeyboardEvent } from "react";
 import {
   Send, Download, FileSpreadsheet, Bot, User,
   Loader2, ChevronDown, CheckCircle2, AlertCircle,
   Play, FlaskConical, X, RefreshCw, Clock, ChevronRight,
+  Trash2, Eye, Upload, MessageSquare, Save,
 } from "lucide-react";
 import {
   generateTestCases, downloadExcel, downloadZip,
-  generatePlaywrightTests, getTestSuites, rerunTestSuite,
-  GenerateResponse, GenerateSuiteResponse, PlaywrightResponse, RerunResponse, TestSuite,
+  generatePlaywrightTests, saveSuite, regenerateScenarios, regenerateScripts,
+  getTestSuites, rerunTestSuite, getSuiteFiles, deleteSuite,
+  GenerateResponse, SuitePreviewResponse,
+  PlaywrightResponse, RerunResponse, TestSuite, SuiteFilesResponse,
 } from "@/lib/api";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -22,6 +25,14 @@ interface Message {
   error?: boolean;
   timestamp: Date;
 }
+
+type WorkflowStage =
+  | "scenario_review"
+  | "regenerating_scenarios"
+  | "generating_scripts"
+  | "script_review"
+  | "regenerating_scripts"
+  | "suite_saved";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -79,28 +90,271 @@ function ReviewBadge({ reviewFeedback }: { reviewFeedback: string }) {
 
 function ScenarioBreakdown({ finalOutput }: { finalOutput: string }) {
   const [open, setOpen] = useState(false);
-  let scenarios: { scenario_type?: string }[] = [];
+  let scenarios: { scenario_type?: string; scenario_name?: string }[] = [];
   try { scenarios = JSON.parse(finalOutput).gherkin_scenarios ?? []; } catch {}
-  const counts: Record<string, number> = {};
+  const grouped: Record<string, { scenario_type?: string; scenario_name?: string }[]> = {};
   for (const s of scenarios) {
     const t = s.scenario_type ?? "Other";
-    counts[t] = (counts[t] ?? 0) + 1;
+    if (!grouped[t]) grouped[t] = [];
+    grouped[t].push(s);
   }
   return (
     <div className="mt-3">
       <button onClick={() => setOpen(o => !o)} className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium">
         <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
-        {open ? "Hide" : "Show"} breakdown by type
+        {open ? "Hide" : "Show"} breakdown by type ({scenarios.length} total)
       </button>
       {open && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {Object.entries(counts).map(([type, count]) => (
-            <span key={type} className={`px-2 py-0.5 rounded-full text-xs font-semibold ${TYPE_COLORS[type] ?? "bg-gray-100 text-gray-700"}`}>
-              {type}: {count}
-            </span>
+        <div className="mt-2 space-y-2">
+          {Object.entries(grouped).map(([type, items]) => (
+            <ScenarioTypeGroup key={type} type={type} items={items} />
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function ScenarioTypeGroup({ type, items }: { type: string; items: { scenario_name?: string }[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="border border-gray-200 rounded-lg overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-3 py-1.5 bg-gray-50 hover:bg-gray-100 text-xs font-medium text-gray-700"
+      >
+        <span className="flex items-center gap-2">
+          <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${TYPE_COLORS[type] ?? "bg-gray-100 text-gray-700"}`}>{type}</span>
+          <span className="text-gray-500">{items.length} scenario{items.length !== 1 ? "s" : ""}</span>
+        </span>
+        <ChevronDown className={`w-3.5 h-3.5 text-gray-400 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="divide-y divide-gray-100">
+          {items.map((item, i) => (
+            <div key={i} className="px-3 py-1.5 text-xs text-gray-600 bg-white">
+              {item.scenario_name ?? `Scenario ${i + 1}`}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Scenario Review Gate ────────────────────────────────────────────────────
+
+function ScenarioReviewGate({
+  finalOutput,
+  onFinalOutputChange,
+  onApprove,
+  onRegenerate,
+  regenerating,
+}: {
+  finalOutput: string;
+  onFinalOutputChange: (newOutput: string) => void;
+  onApprove: () => void;
+  onRegenerate: (feedback: string) => void;
+  regenerating: boolean;
+}) {
+  const [feedback, setFeedback] = useState("");
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadError(null);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      try {
+        JSON.parse(text);
+        onFinalOutputChange(text);
+      } catch {
+        setUploadError("Invalid JSON file. Please upload a valid Gherkin JSON.");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  let scenarioCount = 0;
+  try { scenarioCount = JSON.parse(finalOutput).gherkin_scenarios?.length ?? 0; } catch {}
+
+  return (
+    <div className="mt-4 border border-amber-200 rounded-xl overflow-hidden text-xs bg-amber-50">
+      <div className="flex items-center gap-2 px-3 py-2 bg-amber-100 border-b border-amber-200">
+        <MessageSquare className="w-3.5 h-3.5 text-amber-700" />
+        <span className="font-semibold text-amber-800">Review Generated Scenarios</span>
+        <span className="ml-auto text-amber-600 font-medium">{scenarioCount} scenarios ready</span>
+      </div>
+
+      <div className="p-3 space-y-3 bg-white">
+        <p className="text-gray-600 text-xs">
+          Review the scenarios below. You can approve them to generate Playwright tests, provide feedback for re-generation, or upload a modified JSON file.
+        </p>
+
+        <ScenarioBreakdown finalOutput={finalOutput} />
+
+        <div className="space-y-2">
+          <label className="block text-xs font-medium text-gray-700">Feedback for re-generation (optional)</label>
+          <textarea
+            value={feedback}
+            onChange={e => setFeedback(e.target.value)}
+            placeholder="E.g. Add more edge cases for empty fields, include concurrent login scenarios…"
+            rows={3}
+            className="w-full resize-none rounded-lg border border-gray-300 focus:border-amber-400 focus:ring-1 focus:ring-amber-200 px-3 py-2 text-xs text-gray-900 placeholder-gray-400 bg-gray-50 outline-none"
+          />
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <label className="flex items-center gap-1.5 px-3 py-1.5 border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50 cursor-pointer transition-colors">
+            <Upload className="w-3.5 h-3.5" />
+            Upload modified JSON
+            <input type="file" accept=".json" className="hidden" onChange={handleUpload} />
+          </label>
+          {uploadError && <span className="text-red-500 text-xs">{uploadError}</span>}
+        </div>
+
+        <div className="flex items-center gap-2 pt-1 border-t border-gray-100">
+          <button
+            onClick={() => onRegenerate(feedback)}
+            disabled={regenerating}
+            className="flex items-center gap-1.5 px-3 py-1.5 border border-amber-400 text-amber-700 hover:bg-amber-50 disabled:opacity-50 rounded-lg font-medium transition-colors"
+          >
+            {regenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+            Re-generate Scenarios
+          </button>
+          <button
+            onClick={onApprove}
+            disabled={regenerating}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white rounded-lg font-medium transition-colors ml-auto"
+          >
+            <FlaskConical className="w-3.5 h-3.5" />
+            Approve &amp; Generate Tests →
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Script Review Gate ───────────────────────────────────────────────────────
+
+function ScriptReviewGate({
+  previewData,
+  finalOutput,
+  onApprove,
+  onRegenerate,
+  regenerating,
+}: {
+  previewData: SuitePreviewResponse;
+  finalOutput: string;
+  onApprove: (data: SuitePreviewResponse) => void;
+  onRegenerate: (feedback: string) => void;
+  regenerating: boolean;
+}) {
+  const [tab, setTab] = useState<"feature" | "pom" | "code">("feature");
+  const [feedback, setFeedback] = useState("");
+  const [featureText, setFeatureText] = useState(previewData.feature_content);
+  const [pomText, setPomText]         = useState(previewData.page_content);
+  const [codeText, setCodeText]       = useState(previewData.test_content);
+
+  // Sync textarea state when previewData changes after regen
+  useEffect(() => {
+    setPomText(previewData.page_content);
+    setCodeText(previewData.test_content);
+  }, [previewData.page_content, previewData.test_content]);
+
+  const handleApprove = () => {
+    onApprove({
+      ...previewData,
+      feature_content: featureText,
+      page_content: pomText,
+      test_content: codeText,
+    });
+  };
+
+  const tabs: { key: typeof tab; label: string }[] = [
+    { key: "feature", label: "Feature File" },
+    { key: "pom",     label: "Page Object" },
+    { key: "code",    label: "Test Code" },
+  ];
+
+  return (
+    <div className="mt-4 border border-violet-200 rounded-xl overflow-hidden text-xs">
+      <div className="flex items-center gap-2 px-3 py-2 bg-violet-50 border-b border-violet-200">
+        <Eye className="w-3.5 h-3.5 text-violet-700" />
+        <span className="font-semibold text-violet-800">Review Generated Scripts</span>
+        <span className="ml-auto text-violet-600 font-medium">{previewData.use_case}</span>
+      </div>
+
+      <div className="bg-white">
+        <div className="flex border-b border-gray-200 overflow-x-auto">
+          {tabs.map(t => (
+            <button key={t.key} onClick={() => setTab(t.key)}
+              className={`px-3 py-1.5 whitespace-nowrap font-medium transition-colors ${tab === t.key ? "border-b-2 border-violet-500 text-violet-700" : "text-gray-500 hover:text-gray-700"}`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="p-3">
+          {tab === "feature" && (
+            <textarea
+              value={featureText}
+              onChange={e => setFeatureText(e.target.value)}
+              rows={12}
+              className="w-full font-mono text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 resize-y outline-none focus:border-violet-300 focus:ring-1 focus:ring-violet-100"
+            />
+          )}
+          {tab === "pom" && (
+            <textarea
+              value={pomText}
+              onChange={e => setPomText(e.target.value)}
+              rows={12}
+              className="w-full font-mono text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 resize-y outline-none focus:border-violet-300 focus:ring-1 focus:ring-violet-100"
+            />
+          )}
+          {tab === "code" && (
+            <textarea
+              value={codeText}
+              onChange={e => setCodeText(e.target.value)}
+              rows={12}
+              className="w-full font-mono text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 resize-y outline-none focus:border-violet-300 focus:ring-1 focus:ring-violet-100"
+            />
+          )}
+        </div>
+
+        <div className="px-3 pb-3 space-y-2 border-t border-gray-100 pt-2">
+          <label className="block text-xs font-medium text-gray-700">Feedback for script re-generation (optional)</label>
+          <textarea
+            value={feedback}
+            onChange={e => setFeedback(e.target.value)}
+            placeholder="E.g. Use more specific locators, add wait_for_load_state after navigation…"
+            rows={2}
+            className="w-full resize-none rounded-lg border border-gray-300 focus:border-violet-400 focus:ring-1 focus:ring-violet-200 px-3 py-2 text-xs text-gray-900 placeholder-gray-400 bg-gray-50 outline-none"
+          />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onRegenerate(feedback)}
+              disabled={regenerating}
+              className="flex items-center gap-1.5 px-3 py-1.5 border border-violet-400 text-violet-700 hover:bg-violet-50 disabled:opacity-50 rounded-lg font-medium transition-colors"
+            >
+              {regenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+              Re-generate Scripts
+            </button>
+            <button
+              onClick={handleApprove}
+              disabled={regenerating}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg font-medium transition-colors ml-auto"
+            >
+              <Save className="w-3.5 h-3.5" />
+              Approve &amp; Save Suite
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -188,12 +442,181 @@ function PlaywrightResultsPanel({ data }: { data: PlaywrightResponse | RerunResp
 
 // ─── Saved Suites Panel ───────────────────────────────────────────────────────
 
+function SuiteCard({
+  suite,
+  onRun,
+  onDelete,
+  running,
+  runResult,
+}: {
+  suite: TestSuite;
+  onRun: () => void;
+  onDelete: () => void;
+  running: boolean;
+  runResult: RerunResponse | null;
+}) {
+  const [expanded, setExpanded]         = useState(false);
+  const [files, setFiles]               = useState<SuiteFilesResponse | null>(null);
+  const [loadingFiles, setLoadingFiles] = useState(false);
+  const [filesError, setFilesError]     = useState<string | null>(null);
+  const [fileTab, setFileTab]           = useState<"feature" | "pom" | "code">("feature");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleExpand = async () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && !files && !loadingFiles) {
+      setLoadingFiles(true);
+      setFilesError(null);
+      try {
+        const f = await getSuiteFiles(suite.id);
+        setFiles(f);
+      } catch (e: unknown) {
+        setFilesError(e instanceof Error ? e.message : "Failed to load files");
+      } finally {
+        setLoadingFiles(false);
+      }
+    }
+  };
+
+  const handleDeleteClick = () => {
+    if (confirmDelete) {
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+      setConfirmDelete(false);
+      onDelete();
+    } else {
+      setConfirmDelete(true);
+      confirmTimerRef.current = setTimeout(() => setConfirmDelete(false), 5000);
+    }
+  };
+
+  useEffect(() => () => { if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current); }, []);
+
+  const last = suite.last_results;
+
+  return (
+    <div className="border border-gray-200 rounded-xl overflow-hidden">
+      {/* Suite header */}
+      <div className="flex items-center justify-between px-4 py-3 bg-gray-50">
+        <button onClick={handleExpand} className="flex-1 min-w-0 text-left flex items-center gap-2">
+          <ChevronDown className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`} />
+          <div className="min-w-0">
+            <p className="font-semibold text-gray-800 text-sm truncate">{suite.use_case}</p>
+            <div className="flex items-center gap-3 mt-0.5 text-xs text-gray-500">
+              <span>{suite.scenario_count} scenarios</span>
+              <span>·</span>
+              <span>Created {timeAgo(suite.created_at)}</span>
+              {suite.last_run_at && (
+                <>
+                  <span>·</span>
+                  <span className="flex items-center gap-1">
+                    <Clock className="w-3 h-3" /> Last run {timeAgo(suite.last_run_at)}
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+        </button>
+
+        <div className="flex items-center gap-2 ml-3 flex-shrink-0">
+          {last ? (
+            <div className="flex flex-col items-end gap-1 min-w-[72px]">
+              <span className="text-xs text-gray-600 font-medium">
+                {last.passed}/{last.total} passed
+              </span>
+              <div className="w-full h-1.5 rounded-full bg-gray-200 overflow-hidden flex">
+                {last.total > 0 && (
+                  <>
+                    <div className="h-full bg-green-500 transition-all" style={{ width: `${(last.passed / last.total) * 100}%` }} />
+                    <div className="h-full bg-red-400 transition-all" style={{ width: `${(last.failed / last.total) * 100}%` }} />
+                  </>
+                )}
+              </div>
+            </div>
+          ) : (
+            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 border border-gray-200 whitespace-nowrap">
+              Never run
+            </span>
+          )}
+          <button
+            onClick={onRun}
+            disabled={running}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white text-xs font-medium rounded-lg transition-colors"
+          >
+            {running
+              ? <><Loader2 className="w-3 h-3 animate-spin" /> Running…</>
+              : <><RefreshCw className="w-3 h-3" /> Run</>
+            }
+          </button>
+          <button
+            onClick={handleDeleteClick}
+            className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+              confirmDelete
+                ? "bg-red-600 text-white border-red-600 hover:bg-red-700"
+                : "border-red-300 text-red-600 hover:bg-red-50"
+            }`}
+            title={confirmDelete ? "Click again to confirm delete" : "Delete suite"}
+          >
+            <Trash2 className="w-3 h-3" />
+            {confirmDelete ? "Confirm?" : ""}
+          </button>
+        </div>
+      </div>
+
+      {/* Expanded: file paths + file viewer */}
+      {expanded && (
+        <div className="border-t border-gray-100">
+          <div className="px-4 py-2 bg-white text-xs text-gray-400 font-mono space-y-0.5">
+            <p>📄 tests/{suite.feature_file}</p>
+            <p>🏗 tests/{suite.page_file}</p>
+            <p>🧪 tests/{suite.test_file}</p>
+          </div>
+
+          {loadingFiles && (
+            <div className="flex items-center gap-2 px-4 py-3 text-xs text-gray-500">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading files…
+            </div>
+          )}
+          {filesError && (
+            <div className="px-4 py-2 text-xs text-red-600 bg-red-50">{filesError}</div>
+          )}
+          {files && (
+            <div className="border-t border-gray-100">
+              <div className="flex border-b border-gray-200 bg-white overflow-x-auto">
+                {(["feature", "pom", "code"] as const).map(k => (
+                  <button key={k} onClick={() => setFileTab(k)}
+                    className={`px-3 py-1.5 text-xs whitespace-nowrap font-medium transition-colors ${fileTab === k ? "border-b-2 border-violet-500 text-violet-700" : "text-gray-500 hover:text-gray-700"}`}>
+                    {k === "feature" ? "Feature" : k === "pom" ? "Page Object" : "Test Code"}
+                  </button>
+                ))}
+              </div>
+              <div className="p-3 max-h-64 overflow-y-auto bg-white">
+                <pre className="font-mono text-xs text-gray-700 whitespace-pre-wrap break-all">
+                  {fileTab === "feature" ? files.feature_content : fileTab === "pom" ? files.page_content : files.test_content}
+                </pre>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Inline results after rerun */}
+      {runResult && (
+        <div className="border-t border-gray-200">
+          <PlaywrightResultsPanel data={runResult} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SavedSuitesPanel({ onClose }: { onClose: () => void }) {
-  const [suites, setSuites]     = useState<TestSuite[]>([]);
-  const [loading, setLoading]   = useState(true);
-  const [running, setRunning]   = useState<string | null>(null);
-  const [results, setResults]   = useState<Record<string, RerunResponse>>({});
-  const [error, setError]       = useState<string | null>(null);
+  const [suites, setSuites]   = useState<TestSuite[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState<string | null>(null);
+  const [results, setResults] = useState<Record<string, RerunResponse>>({});
+  const [error, setError]     = useState<string | null>(null);
 
   useEffect(() => {
     getTestSuites()
@@ -224,11 +647,20 @@ function SavedSuitesPanel({ onClose }: { onClose: () => void }) {
     }
   };
 
+  const handleDelete = async (suiteId: string) => {
+    try {
+      await deleteSuite(suiteId);
+      setSuites(prev => prev.filter(s => s.id !== suiteId));
+      setResults(prev => { const n = { ...prev }; delete n[suiteId]; return n; });
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : "Delete failed");
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex">
       <div className="absolute inset-0 bg-black/30" onClick={onClose} />
       <div className="relative ml-auto h-full w-full max-w-2xl bg-white shadow-2xl flex flex-col">
-        {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 bg-white flex-shrink-0">
           <div className="flex items-center gap-2">
             <FlaskConical className="w-5 h-5 text-violet-600" />
@@ -239,7 +671,6 @@ function SavedSuitesPanel({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        {/* Body */}
         <div className="flex-1 overflow-y-auto p-5">
           {loading && (
             <div className="flex items-center gap-2 text-gray-500 text-sm">
@@ -260,78 +691,14 @@ function SavedSuitesPanel({ onClose }: { onClose: () => void }) {
           {!loading && suites.length > 0 && (
             <div className="space-y-3">
               {suites.map(suite => (
-                <div key={suite.id} className="border border-gray-200 rounded-xl overflow-hidden">
-                  {/* Suite header row */}
-                  <div className="flex items-center justify-between px-4 py-3 bg-gray-50">
-                    <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-gray-800 text-sm truncate">{suite.use_case}</p>
-                      <div className="flex items-center gap-3 mt-0.5 text-xs text-gray-500">
-                        <span>{suite.scenario_count} scenarios</span>
-                        <span>·</span>
-                        <span>Created {timeAgo(suite.created_at)}</span>
-                        {suite.last_run_at && (
-                          <>
-                            <span>·</span>
-                            <span className="flex items-center gap-1">
-                              <Clock className="w-3 h-3" /> Last run {timeAgo(suite.last_run_at)}
-                            </span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 ml-3 flex-shrink-0">
-                      {suite.last_results ? (
-                        <div className="flex flex-col items-end gap-1 min-w-[72px]">
-                          <span className="text-xs text-gray-600 font-medium">
-                            {suite.last_results.passed}/{suite.last_results.total} passed
-                          </span>
-                          <div className="w-full h-1.5 rounded-full bg-gray-200 overflow-hidden flex">
-                            {suite.last_results.total > 0 && (
-                              <>
-                                <div
-                                  className="h-full bg-green-500 transition-all"
-                                  style={{ width: `${(suite.last_results.passed / suite.last_results.total) * 100}%` }}
-                                />
-                                <div
-                                  className="h-full bg-red-400 transition-all"
-                                  style={{ width: `${(suite.last_results.failed / suite.last_results.total) * 100}%` }}
-                                />
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      ) : (
-                        <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 border border-gray-200 whitespace-nowrap">
-                          Never run
-                        </span>
-                      )}
-                      <button
-                        onClick={() => handleRun(suite)}
-                        disabled={running === suite.id}
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white text-xs font-medium rounded-lg transition-colors"
-                      >
-                        {running === suite.id
-                          ? <><Loader2 className="w-3 h-3 animate-spin" /> Running…</>
-                          : <><RefreshCw className="w-3 h-3" /> Run</>
-                        }
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* File paths */}
-                  <div className="px-4 py-2 bg-white border-t border-gray-100 text-xs text-gray-400 font-mono space-y-0.5">
-                    <p>📄 tests/{suite.feature_file}</p>
-                    <p>🏗 tests/{suite.page_file}</p>
-                    <p>🧪 tests/{suite.test_file}</p>
-                  </div>
-
-                  {/* Inline results after rerun */}
-                  {results[suite.id] && (
-                    <div className="border-t border-gray-200">
-                      <PlaywrightResultsPanel data={results[suite.id]} />
-                    </div>
-                  )}
-                </div>
+                <SuiteCard
+                  key={suite.id}
+                  suite={suite}
+                  onRun={() => handleRun(suite)}
+                  onDelete={() => handleDelete(suite.id)}
+                  running={running === suite.id}
+                  runResult={results[suite.id] ?? null}
+                />
               ))}
             </div>
           )}
@@ -341,44 +708,24 @@ function SavedSuitesPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-// ─── Suite Generated Panel ────────────────────────────────────────────────────
+// ─── Suite Saved Panel ────────────────────────────────────────────────────────
 
-function SuiteGeneratedPanel({ data, onViewSuites }: { data: GenerateSuiteResponse; onViewSuites: () => void }) {
-  const [tab, setTab] = useState<"feature" | "pom" | "code">("feature");
-
-  const tabs: { key: typeof tab; label: string }[] = [
-    { key: "feature", label: "Feature" },
-    { key: "pom",     label: "Page Object" },
-    { key: "code",    label: "Test Code" },
-  ];
-
+function SuiteSavedPanel({ suiteId, useCase, onViewSuites }: { suiteId: string; useCase: string; onViewSuites: () => void }) {
   return (
-    <div className="mt-4 border border-green-200 rounded-xl overflow-hidden text-xs">
-      <div className="flex items-center justify-between bg-green-50 px-3 py-2 border-b border-green-200">
+    <div className="mt-4 border border-green-200 rounded-xl overflow-hidden text-xs bg-green-50">
+      <div className="flex items-center justify-between px-3 py-2.5 bg-green-100 border-b border-green-200">
         <span className="font-semibold text-green-700 flex items-center gap-1.5">
-          <CheckCircle2 className="w-3.5 h-3.5" /> Suite saved — {data.use_case}
+          <CheckCircle2 className="w-3.5 h-3.5" /> Suite saved — {useCase}
         </span>
         <button
           onClick={onViewSuites}
           className="flex items-center gap-1 text-violet-600 hover:text-violet-800 font-semibold text-xs transition-colors"
         >
-          View in Saved Test Suites <ChevronRight className="w-3 h-3" />
+          View &amp; Run in Saved Test Suites <ChevronRight className="w-3 h-3" />
         </button>
       </div>
-
-      <div className="flex border-b border-gray-200 bg-white overflow-x-auto">
-        {tabs.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-            className={`px-3 py-1.5 whitespace-nowrap font-medium transition-colors ${tab === t.key ? "border-b-2 border-violet-500 text-violet-700" : "text-gray-500 hover:text-gray-700"}`}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="bg-white p-3 max-h-72 overflow-y-auto">
-        {tab === "feature" && <pre className="font-mono text-gray-700 whitespace-pre-wrap break-all">{data.feature_content}</pre>}
-        {tab === "pom"     && <pre className="font-mono text-gray-700 whitespace-pre-wrap break-all">{data.page_content}</pre>}
-        {tab === "code"    && <pre className="font-mono text-gray-700 whitespace-pre-wrap break-all">{data.test_content}</pre>}
+      <div className="px-3 py-2 text-gray-600">
+        Suite ID: <span className="font-mono text-gray-800">{suiteId}</span>. Open Saved Test Suites to run or review the files.
       </div>
     </div>
   );
@@ -399,9 +746,12 @@ function AssistantCard({
 }) {
   const [downloading, setDownloading]       = useState(false);
   const [downloadingZip, setDownloadingZip] = useState(false);
-  const [generating, setGenerating]         = useState(false);
-  const [suiteData, setSuiteData]           = useState<GenerateSuiteResponse | null>(null);
-  const [suiteError, setSuiteError]         = useState<string | null>(null);
+  const [stage, setStage]                   = useState<WorkflowStage>("scenario_review");
+  const [localFinalOutput, setLocalFinalOutput] = useState(message.data?.final_output ?? "");
+  const [previewData, setPreviewData]       = useState<SuitePreviewResponse | null>(null);
+  const [savedSuiteId, setSavedSuiteId]     = useState<string | null>(null);
+  const [savedUseCase, setSavedUseCase]     = useState<string>("");
+  const [stageError, setStageError]         = useState<string | null>(null);
 
   if (message.error) {
     return (
@@ -429,20 +779,66 @@ function AssistantCard({
     try { await onDownloadZip(message.data); } finally { setDownloadingZip(false); }
   };
 
-  const handleGenerateTests = async () => {
+  const handleRegenScenarios = async (feedback: string) => {
     if (!message.data) return;
-    setGenerating(true);
-    setSuiteData(null);
-    setSuiteError(null);
+    setStageError(null);
+    setStage("regenerating_scenarios");
     try {
-      const result = await generatePlaywrightTests(message.data.final_output);
-      setSuiteData(result);
+      const result = await regenerateScenarios(message.data.question, feedback);
+      setLocalFinalOutput(result.final_output);
+      setStage("scenario_review");
     } catch (err: unknown) {
-      setSuiteError(err instanceof Error ? err.message : "Test generation failed");
-    } finally {
-      setGenerating(false);
+      setStageError(err instanceof Error ? err.message : "Re-generation failed");
+      setStage("scenario_review");
     }
   };
+
+  const handleApproveScenarios = async () => {
+    setStageError(null);
+    setStage("generating_scripts");
+    try {
+      const result = await generatePlaywrightTests(localFinalOutput);
+      setPreviewData(result);
+      setStage("script_review");
+    } catch (err: unknown) {
+      setStageError(err instanceof Error ? err.message : "Script generation failed");
+      setStage("scenario_review");
+    }
+  };
+
+  const handleRegenScripts = async (feedback: string) => {
+    setStageError(null);
+    setStage("regenerating_scripts");
+    try {
+      const result = await regenerateScripts(localFinalOutput, feedback);
+      setPreviewData(prev => prev ? { ...prev, page_content: result.page_content, test_content: result.test_content } : prev);
+      setStage("script_review");
+    } catch (err: unknown) {
+      setStageError(err instanceof Error ? err.message : "Script re-generation failed");
+      setStage("script_review");
+    }
+  };
+
+  const handleApproveScripts = async (editedData: SuitePreviewResponse) => {
+    setStageError(null);
+    try {
+      const saved = await saveSuite(editedData);
+      setSavedSuiteId(saved.suite_id);
+      setSavedUseCase(saved.use_case);
+      setStage("suite_saved");
+    } catch (err: unknown) {
+      setStageError(err instanceof Error ? err.message : "Save failed");
+    }
+  };
+
+  const isGeneratingScripts   = stage === "generating_scripts";
+  const isRegeneratingScripts = stage === "regenerating_scripts";
+  const isRegeneratingScenarios = stage === "regenerating_scenarios";
+
+  // Phase tracker state
+  const scenariosDone = true;
+  const testsDone     = stage === "suite_saved";
+  const testsActive   = isGeneratingScripts || isRegeneratingScripts || stage === "script_review";
 
   return (
     <div className="flex gap-3 items-start">
@@ -465,19 +861,17 @@ function AssistantCard({
                 <div className="mt-2">
                   <ReviewBadge reviewFeedback={message.data.review_feedback} />
                 </div>
-                <ScenarioBreakdown finalOutput={message.data.final_output} />
 
-                {/* 3-phase flow tracker */}
+                {/* Phase tracker */}
                 <div className="mt-3 flex items-center gap-2 text-xs">
                   <div className="flex items-center gap-1 text-green-700 font-medium">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Scenarios</span>
+                    <CheckCircle2 className="w-3.5 h-3.5" /><span>Scenarios</span>
                   </div>
                   <ChevronRight className="w-3 h-3 text-gray-300" />
-                  <div className={`flex items-center gap-1 font-medium ${suiteData ? "text-green-700" : generating ? "text-violet-600" : "text-gray-400"}`}>
-                    {suiteData
+                  <div className={`flex items-center gap-1 font-medium ${testsDone ? "text-green-700" : testsActive ? "text-violet-600" : "text-gray-400"}`}>
+                    {testsDone
                       ? <CheckCircle2 className="w-3.5 h-3.5" />
-                      : generating
+                      : testsActive
                         ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
                         : <div className="w-3.5 h-3.5 rounded-full border-2 border-gray-300" />
                     }
@@ -485,21 +879,55 @@ function AssistantCard({
                   </div>
                   <ChevronRight className="w-3 h-3 text-gray-300" />
                   <div
-                    className={`flex items-center gap-1 font-medium ${suiteData ? "text-violet-700 cursor-pointer hover:text-violet-900" : "text-gray-400"}`}
-                    onClick={suiteData ? onOpenSuites : undefined}
+                    className={`flex items-center gap-1 font-medium ${testsDone ? "text-violet-700 cursor-pointer hover:text-violet-900" : "text-gray-400"}`}
+                    onClick={testsDone ? onOpenSuites : undefined}
                   >
-                    <div className={`w-3.5 h-3.5 rounded-full border-2 ${suiteData ? "border-violet-500" : "border-gray-300"}`} />
+                    <div className={`w-3.5 h-3.5 rounded-full border-2 ${testsDone ? "border-violet-500" : "border-gray-300"}`} />
                     <span>Run</span>
-                    {suiteData && <ChevronRight className="w-3 h-3" />}
+                    {testsDone && <ChevronRight className="w-3 h-3" />}
                   </div>
                 </div>
 
-                {suiteError && (
+                {stageError && (
                   <div className="mt-3 flex items-center gap-2 text-red-600 text-xs bg-red-50 px-3 py-2 rounded-lg border border-red-200">
-                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> {suiteError}
+                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> {stageError}
                   </div>
                 )}
-                {suiteData && <SuiteGeneratedPanel data={suiteData} onViewSuites={onOpenSuites} />}
+
+                {/* Generating scripts spinner */}
+                {(isGeneratingScripts || isRegeneratingScripts) && (
+                  <div className="mt-4 flex items-center gap-2 text-xs text-violet-600 bg-violet-50 px-3 py-2.5 rounded-lg border border-violet-200">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
+                    {isRegeneratingScripts ? "Re-generating scripts with your feedback…" : "Generating Playwright scripts (Feature · POM · Tests)…"}
+                  </div>
+                )}
+
+                {/* Scenario review gate */}
+                {(stage === "scenario_review" || isRegeneratingScenarios) && (
+                  <ScenarioReviewGate
+                    finalOutput={localFinalOutput}
+                    onFinalOutputChange={setLocalFinalOutput}
+                    onApprove={handleApproveScenarios}
+                    onRegenerate={handleRegenScenarios}
+                    regenerating={isRegeneratingScenarios}
+                  />
+                )}
+
+                {/* Script review gate */}
+                {(stage === "script_review") && previewData && (
+                  <ScriptReviewGate
+                    previewData={previewData}
+                    finalOutput={localFinalOutput}
+                    onApprove={handleApproveScripts}
+                    onRegenerate={handleRegenScripts}
+                    regenerating={false}
+                  />
+                )}
+
+                {/* Saved */}
+                {stage === "suite_saved" && savedSuiteId && (
+                  <SuiteSavedPanel suiteId={savedSuiteId} useCase={savedUseCase} onViewSuites={onOpenSuites} />
+                )}
               </>
             )}
           </div>
@@ -515,11 +943,6 @@ function AssistantCard({
                 className="flex items-center gap-2 px-3.5 py-2 bg-gray-700 hover:bg-gray-800 disabled:bg-gray-400 text-white text-sm font-medium rounded-xl transition-colors shadow-sm">
                 {downloadingZip ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                 {downloadingZip ? "Packaging…" : "Download All"}
-              </button>
-              <button onClick={handleGenerateTests} disabled={generating || !!suiteData}
-                className="flex items-center gap-2 px-3.5 py-2 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white text-sm font-medium rounded-xl transition-colors shadow-sm">
-                {generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <FlaskConical className="w-4 h-4" />}
-                {generating ? "Generating…" : suiteData ? "Tests Generated" : "Generate Tests"}
               </button>
             </div>
           )}
@@ -575,12 +998,12 @@ function LoadingIndicator() {
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function ChatInterface() {
-  const [messages, setMessages]         = useState<Message[]>([]);
-  const [input, setInput]               = useState("");
-  const [loading, setLoading]           = useState(false);
-  const [suitesOpen, setSuitesOpen]     = useState(false);
-  const bottomRef                       = useRef<HTMLDivElement>(null);
-  const textareaRef                     = useRef<HTMLTextAreaElement>(null);
+  const [messages, setMessages]     = useState<Message[]>([]);
+  const [input, setInput]           = useState("");
+  const [loading, setLoading]       = useState(false);
+  const [suitesOpen, setSuitesOpen] = useState(false);
+  const bottomRef                   = useRef<HTMLDivElement>(null);
+  const textareaRef                 = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -604,7 +1027,7 @@ export default function ChatInterface() {
       const data = await generateTestCases(q);
       const botMsg: Message = {
         id: crypto.randomUUID(), role: "assistant",
-        content: `Generated ${data.scenario_count} BDD scenarios for "${data.use_case || q}". Click Generate Tests to create the Playwright POM suite, then run it from Saved Test Suites.`,
+        content: `Generated ${data.scenario_count} BDD scenarios for "${data.use_case || q}". Review them below and approve to generate Playwright tests.`,
         data, timestamp: new Date(),
       };
       setMessages(prev => [...prev, botMsg]);
@@ -657,7 +1080,7 @@ export default function ChatInterface() {
               </div>
               <h2 className="text-xl font-semibold text-gray-800 mb-1">AgenticQAEngine</h2>
               <p className="text-sm text-gray-500 max-w-sm mx-auto mb-8">
-                Describe a feature to generate BDD scenarios, Playwright tests, and run them end-to-end.
+                Describe a feature to generate BDD scenarios, review them, then generate and run Playwright tests end-to-end.
               </p>
 
               {/* 3-step workflow diagram */}
@@ -667,17 +1090,13 @@ export default function ChatInterface() {
                   <span className="text-xs font-semibold text-gray-700 text-center">Generate Scenarios</span>
                   <span className="text-xs text-gray-400 text-center">Gherkin BDD via RAG</span>
                 </div>
-                <div className="mt-3.5 text-gray-300">
-                  <ChevronRight className="w-5 h-5" />
-                </div>
+                <div className="mt-3.5 text-gray-300"><ChevronRight className="w-5 h-5" /></div>
                 <div className="flex flex-col items-center gap-2 w-28">
                   <div className="w-11 h-11 rounded-full bg-violet-100 flex items-center justify-center text-violet-600 font-bold text-base shadow-sm">②</div>
-                  <span className="text-xs font-semibold text-gray-700 text-center">Generate Tests</span>
-                  <span className="text-xs text-gray-400 text-center">Playwright POM</span>
+                  <span className="text-xs font-semibold text-gray-700 text-center">Review &amp; Generate Tests</span>
+                  <span className="text-xs text-gray-400 text-center">Human-in-the-Loop</span>
                 </div>
-                <div className="mt-3.5 text-gray-300">
-                  <ChevronRight className="w-5 h-5" />
-                </div>
+                <div className="mt-3.5 text-gray-300"><ChevronRight className="w-5 h-5" /></div>
                 <div className="flex flex-col items-center gap-2 w-28">
                   <div className="w-11 h-11 rounded-full bg-green-100 flex items-center justify-center text-green-600 font-bold text-base shadow-sm">③</div>
                   <span className="text-xs font-semibold text-gray-700 text-center">Run Tests</span>

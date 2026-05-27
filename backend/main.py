@@ -17,7 +17,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from TestGenerationEngine import build_question_agent_graph
 from excel_generator import generate_excel
 from zip_generator import generate_zip
-from playwright_agent import generate_suite_only, generate_and_run_suite, rerun_suite, list_suites
+from playwright_agent import (
+    generate_suite_preview, save_approved_suite, regenerate_scripts,
+    get_suite_files, delete_suite,
+    generate_suite_only, generate_and_run_suite, rerun_suite, list_suites,
+)
 
 app = FastAPI(title="QA Test Cases Generator API")
 
@@ -60,6 +64,25 @@ class PlaywrightRunRequest(BaseModel):
 
 class PlaywrightRerunRequest(BaseModel):
     suite_id: str
+
+
+class PlaywrightSaveRequest(BaseModel):
+    use_case: str
+    slug: str
+    scenario_count: int
+    feature_content: str
+    page_content: str
+    test_content: str
+
+
+class RegenerateScriptsRequest(BaseModel):
+    final_output: str
+    feedback: str
+
+
+class RegenerateScenariosRequest(BaseModel):
+    question: str
+    feedback: str
 
 
 @app.post("/api/generate")
@@ -156,7 +179,7 @@ async def download_zip(request: DownloadZipRequest):
 @app.post("/api/playwright-generate")
 async def playwright_generate(request: PlaywrightRunRequest):
     try:
-        result = await asyncio.to_thread(generate_suite_only, request.final_output)
+        result = await asyncio.to_thread(generate_suite_preview, request.final_output)
         return result
     except Exception:
         raise HTTPException(status_code=500, detail=traceback.format_exc())
@@ -175,6 +198,92 @@ async def playwright_run(request: PlaywrightRunRequest):
 async def get_test_suites():
     try:
         return {"suites": list_suites()}
+    except Exception:
+        raise HTTPException(status_code=500, detail=traceback.format_exc())
+
+
+@app.post("/api/playwright-save")
+async def playwright_save(request: PlaywrightSaveRequest):
+    try:
+        suite_id = await asyncio.to_thread(
+            save_approved_suite,
+            request.use_case, request.slug, request.feature_content,
+            request.page_content, request.test_content, request.scenario_count,
+        )
+        return {"suite_id": suite_id, "use_case": request.use_case}
+    except Exception:
+        raise HTTPException(status_code=500, detail=traceback.format_exc())
+
+
+@app.post("/api/regenerate-scripts")
+async def regenerate_scripts_endpoint(request: RegenerateScriptsRequest):
+    try:
+        result = await asyncio.to_thread(regenerate_scripts, request.final_output, request.feedback)
+        return result
+    except Exception:
+        raise HTTPException(status_code=500, detail=traceback.format_exc())
+
+
+@app.post("/api/regenerate-scenarios")
+async def regenerate_scenarios_endpoint(request: RegenerateScenariosRequest):
+    augmented_question = request.question + "\n\nReviewer feedback: " + request.feedback
+    initial_state = {
+        "question": augmented_question,
+        "retrieved_context": "",
+        "structured_requirements": "",
+        "dependency_mapping": "",
+        "generated_scenarios": "",
+        "generated_gherkin": "",
+        "review_feedback": "",
+        "final_output": "",
+        "retry_count": 0,
+    }
+    try:
+        result = await asyncio.to_thread(agent.invoke, initial_state)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    scenario_count = 0
+    use_case = ""
+    try:
+        raw = result.get("final_output", "{}")
+        raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        gherkin_data = json.loads(raw)
+        scenario_count = len(gherkin_data.get("gherkin_scenarios", []))
+        use_case = gherkin_data.get("use_case", "")
+    except Exception:
+        pass
+
+    return {
+        "question": request.question,
+        "final_output": result.get("final_output", ""),
+        "review_feedback": result.get("review_feedback", ""),
+        "generated_scenarios": result.get("generated_scenarios", ""),
+        "scenario_count": scenario_count,
+        "use_case": use_case,
+        "retrieved_context": result.get("retrieved_context", ""),
+        "structured_requirements": result.get("structured_requirements", ""),
+        "dependency_mapping": result.get("dependency_mapping", ""),
+    }
+
+
+@app.get("/api/test-suites/{suite_id}/files")
+async def get_test_suite_files(suite_id: str):
+    try:
+        return await asyncio.to_thread(get_suite_files, suite_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail=traceback.format_exc())
+
+
+@app.delete("/api/test-suites/{suite_id}")
+async def delete_test_suite(suite_id: str):
+    try:
+        await asyncio.to_thread(delete_suite, suite_id)
+        return {"deleted": suite_id}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception:
         raise HTTPException(status_code=500, detail=traceback.format_exc())
 

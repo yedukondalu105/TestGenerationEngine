@@ -263,6 +263,47 @@ def save_suite_files(
     return suite_id
 
 
+def save_approved_suite(
+    use_case: str,
+    slug: str,
+    feature_content: str,
+    page_content: str,
+    test_content: str,
+    scenario_count: int,
+) -> str:
+    """Save pre-generated content to disk and register in manifest. Returns suite_id."""
+    return save_suite_files(use_case, slug, feature_content, page_content, test_content, scenario_count)
+
+
+def get_suite_files(suite_id: str) -> dict:
+    """Read feature/POM/test file contents for a saved suite."""
+    manifest = _load_manifest()
+    suite = next((s for s in manifest["suites"] if s["id"] == suite_id), None)
+    if not suite:
+        raise ValueError(f"Suite '{suite_id}' not found")
+    return {
+        "suite_id":        suite_id,
+        "use_case":        suite["use_case"],
+        "feature_content": (TESTS_DIR / suite["feature_file"]).read_text(encoding="utf-8") if (TESTS_DIR / suite["feature_file"]).exists() else "",
+        "page_content":    (TESTS_DIR / suite["page_file"]).read_text(encoding="utf-8")    if (TESTS_DIR / suite["page_file"]).exists()    else "",
+        "test_content":    (TESTS_DIR / suite["test_file"]).read_text(encoding="utf-8")     if (TESTS_DIR / suite["test_file"]).exists()    else "",
+    }
+
+
+def delete_suite(suite_id: str) -> None:
+    """Delete all generated files for a suite and remove from manifest."""
+    manifest = _load_manifest()
+    suite = next((s for s in manifest["suites"] if s["id"] == suite_id), None)
+    if not suite:
+        raise ValueError(f"Suite '{suite_id}' not found")
+    for key in ("feature_file", "page_file", "test_file"):
+        p = TESTS_DIR / suite[key]
+        if p.exists():
+            p.unlink()
+    manifest["suites"] = [s for s in manifest["suites"] if s["id"] != suite_id]
+    _save_manifest(manifest)
+
+
 def update_suite_results(suite_id: str, execution_results: dict, review: str) -> None:
     review_data: dict = {}
     try:
@@ -384,8 +425,8 @@ Return ONLY valid JSON. No markdown fences. No prose.
 
 # ─── Main orchestration ───────────────────────────────────────────────────────
 
-def generate_suite_only(gherkin_json: str) -> dict:
-    """Generate feature + POM + tests → save to disk. Does NOT run the tests."""
+def generate_suite_preview(gherkin_json: str) -> dict:
+    """Generate feature + POM + tests WITHOUT saving. Returns preview dict."""
     try:
         parsed = json.loads(gherkin_json)
     except Exception:
@@ -401,14 +442,58 @@ def generate_suite_only(gherkin_json: str) -> dict:
     page_content    = page_object_agent(gherkin_json, use_case, cls_name)
     test_content    = test_suite_agent(gherkin_json, use_case, cls_name, mod_name, len(scenarios), page_content)
 
-    suite_id = save_suite_files(use_case, slug, feature_content, page_content, test_content, len(scenarios))
-
     return {
-        "suite_id":        suite_id,
         "use_case":        use_case,
+        "slug":            slug,
+        "scenario_count":  len(scenarios),
         "feature_content": feature_content,
         "page_content":    page_content,
         "test_content":    test_content,
+    }
+
+
+def regenerate_scripts(gherkin_json: str, feedback: str) -> dict:
+    """Re-generate POM + test with reviewer feedback. Does NOT regenerate feature, does NOT save."""
+    try:
+        parsed = json.loads(gherkin_json)
+    except Exception:
+        parsed = {}
+
+    use_case = parsed.get("use_case", "test_suite")
+    scenarios = parsed.get("gherkin_scenarios", [])
+    slug      = _slugify(use_case)
+    cls_name  = _class_name(slug)
+    mod_name  = f"{slug}_page"
+
+    augmented = gherkin_json + f"\n\nReviewer feedback on scripts: {feedback}"
+    page_content = page_object_agent(augmented, use_case, cls_name)
+    test_content = test_suite_agent(augmented, use_case, cls_name, mod_name, len(scenarios), page_content)
+
+    return {
+        "use_case":    use_case,
+        "slug":        slug,
+        "page_content": page_content,
+        "test_content": test_content,
+    }
+
+
+def generate_suite_only(gherkin_json: str) -> dict:
+    """Generate feature + POM + tests → save to disk. Does NOT run the tests."""
+    preview  = generate_suite_preview(gherkin_json)
+    suite_id = save_approved_suite(
+        preview["use_case"],
+        preview["slug"],
+        preview["feature_content"],
+        preview["page_content"],
+        preview["test_content"],
+        preview["scenario_count"],
+    )
+    return {
+        "suite_id":        suite_id,
+        "use_case":        preview["use_case"],
+        "feature_content": preview["feature_content"],
+        "page_content":    preview["page_content"],
+        "test_content":    preview["test_content"],
     }
 
 

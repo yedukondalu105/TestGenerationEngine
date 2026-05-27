@@ -109,7 +109,36 @@ export interface GenerateSuiteResponse {
   test_content: string;
 }
 
-export async function generatePlaywrightTests(final_output: string): Promise<GenerateSuiteResponse> {
+export interface SuitePreviewResponse {
+  use_case: string;
+  slug: string;
+  scenario_count: number;
+  feature_content: string;
+  page_content: string;
+  test_content: string;
+}
+
+export interface SaveSuiteResponse {
+  suite_id: string;
+  use_case: string;
+}
+
+export interface SuiteFilesResponse {
+  suite_id: string;
+  use_case: string;
+  feature_content: string;
+  page_content: string;
+  test_content: string;
+}
+
+export interface RegenerateScriptsResponse {
+  use_case: string;
+  slug: string;
+  page_content: string;
+  test_content: string;
+}
+
+export async function generatePlaywrightTests(final_output: string): Promise<SuitePreviewResponse> {
   const res = await fetch("/api/playwright-generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -120,6 +149,66 @@ export async function generatePlaywrightTests(final_output: string): Promise<Gen
     throw new Error((err as { detail?: string }).detail || `Test generation failed (${res.status})`);
   }
   return res.json();
+}
+
+export async function saveSuite(data: SuitePreviewResponse): Promise<SaveSuiteResponse> {
+  const res = await fetch("/api/playwright-save", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      use_case: data.use_case,
+      slug: data.slug,
+      scenario_count: data.scenario_count,
+      feature_content: data.feature_content,
+      page_content: data.page_content,
+      test_content: data.test_content,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `Save failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function regenerateScenarios(question: string, feedback: string): Promise<GenerateResponse> {
+  const res = await fetch("/api/regenerate-scenarios", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, feedback }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `Regeneration failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function regenerateScripts(final_output: string, feedback: string): Promise<RegenerateScriptsResponse> {
+  const res = await fetch("/api/regenerate-scripts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ final_output, feedback }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `Script regeneration failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function getSuiteFiles(suiteId: string): Promise<SuiteFilesResponse> {
+  const res = await fetch(`/api/test-suites/${suiteId}/files`);
+  if (!res.ok) throw new Error("Failed to load suite files");
+  return res.json();
+}
+
+export async function deleteSuite(suiteId: string): Promise<void> {
+  const res = await fetch(`/api/test-suites/${suiteId}`, { method: "DELETE" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `Delete failed (${res.status})`);
+  }
 }
 
 export async function runPlaywright(final_output: string): Promise<PlaywrightResponse> {
