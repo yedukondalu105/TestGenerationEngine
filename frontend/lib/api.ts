@@ -116,6 +116,7 @@ export interface SuitePreviewResponse {
   feature_content: string;
   page_content: string;
   test_content: string;
+  suite_test_data: Record<string, string>;
 }
 
 export interface SaveSuiteResponse {
@@ -162,6 +163,7 @@ export async function saveSuite(data: SuitePreviewResponse): Promise<SaveSuiteRe
       feature_content: data.feature_content,
       page_content: data.page_content,
       test_content: data.test_content,
+      suite_test_data: data.suite_test_data ?? {},
     }),
   });
   if (!res.ok) {

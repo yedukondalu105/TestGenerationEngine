@@ -1,5 +1,13 @@
 import os
+import json
+from pathlib import Path
 from playwright.sync_api import Page, expect
+
+_TD_FILE = Path(__file__).parent.parent / "test_data.json"
+_TD = json.loads(_TD_FILE.read_text(encoding="utf-8")) if _TD_FILE.exists() else {}
+_ADMIN = _TD.get("app", {}).get("admin", {})
+_DEFAULT_USERNAME = _ADMIN.get("username", "Admin")
+_DEFAULT_PASSWORD = _ADMIN.get("password", "admin123")
 
 
 class BasePage:
@@ -9,11 +17,10 @@ class BasePage:
         self.page = page
 
     def goto_app(self) -> None:
-        """Navigate to the app login page without logging in."""
         self.page.goto(self.APP_URL)
         self.page.wait_for_load_state("networkidle")
 
-    def login(self, username: str = "Admin", password: str = "admin123") -> None:
+    def login(self, username: str = _DEFAULT_USERNAME, password: str = _DEFAULT_PASSWORD) -> None:
         """Full login: navigate → fill credentials → submit → wait for dashboard.
         Override in subclasses that test the login page itself."""
         self.goto_app()

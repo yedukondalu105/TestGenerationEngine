@@ -74,6 +74,7 @@ class PlaywrightSaveRequest(BaseModel):
     feature_content: str
     page_content: str
     test_content: str
+    suite_test_data: dict = {}
 
 
 class RegenerateScriptsRequest(BaseModel):
@@ -221,6 +222,7 @@ async def playwright_save(request: PlaywrightSaveRequest):
             save_approved_suite,
             request.use_case, request.slug, request.feature_content,
             request.page_content, request.test_content, request.scenario_count,
+            request.suite_test_data or None,
         )
         return {"suite_id": suite_id, "use_case": request.use_case}
     except Exception:

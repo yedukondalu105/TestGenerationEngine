@@ -15,11 +15,12 @@ load_dotenv(override=True)
 
 APP_URL = os.getenv("PLAYWRIGHT_APP_URL", "")
 
-TESTS_DIR   = Path(__file__).parent.parent / "tests"
-FEATURES_DIR = TESTS_DIR / "features"
-PAGES_DIR    = TESTS_DIR / "pages"
-SUITES_DIR   = TESTS_DIR / "test_suites"
-MANIFEST     = TESTS_DIR / "suites.json"
+TESTS_DIR      = Path(__file__).parent.parent / "tests"
+FEATURES_DIR   = TESTS_DIR / "features"
+PAGES_DIR      = TESTS_DIR / "pages"
+SUITES_DIR     = TESTS_DIR / "test_suites"
+MANIFEST       = TESTS_DIR / "suites.json"
+TEST_DATA_FILE = TESTS_DIR / "test_data.json"
 
 llm_codegen = ChatOpenAI(model="gpt-4o",     temperature=0.1)
 llm_review  = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
@@ -56,6 +57,74 @@ def _load_manifest() -> dict:
 
 def _save_manifest(data: dict) -> None:
     MANIFEST.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _load_test_data() -> dict:
+    if TEST_DATA_FILE.exists():
+        return json.loads(TEST_DATA_FILE.read_text(encoding="utf-8"))
+    return {"app": {}, "suites": {}}
+
+
+def _merge_test_data(slug: str, suite_data: dict) -> None:
+    td = _load_test_data()
+    td.setdefault("suites", {})[slug] = suite_data
+    TEST_DATA_FILE.write_text(json.dumps(td, indent=2), encoding="utf-8")
+
+
+def _remove_test_data(slug: str) -> None:
+    td = _load_test_data()
+    td.get("suites", {}).pop(slug, None)
+    TEST_DATA_FILE.write_text(json.dumps(td, indent=2), encoding="utf-8")
+
+
+# ─── Agent 0: Test data extraction ───────────────────────────────────────────
+
+_TEST_DATA_PROMPT = """You are extracting test data from Gherkin test scenarios for a data-driven test suite.
+
+Suite: {use_case}
+
+Analyze the Gherkin scenarios below and extract ALL concrete test data values used in them.
+Return a flat JSON object where keys are descriptive names and values are the exact strings used.
+
+Common keys for authentication suites:
+  valid_username, valid_password       — credentials that succeed
+  invalid_username, invalid_password   — credentials that fail
+  empty_value                          — "" (empty string, for empty-field tests)
+  short_username, short_password       — values below minimum length
+  invalid_format                       — value with invalid characters (e.g. "!nv@l!d")
+  max_length_username, max_length_password — value at/above maximum allowed length
+
+For other suites, extract keys matching the actual data in the scenarios
+(e.g. employee_name, department_name, job_title, start_date, end_date, amount, etc.).
+
+Rules:
+- Return ONLY a flat JSON object — no nesting, no arrays
+- All values must be strings
+- If a value is repeated in multiple scenarios use it once under the most descriptive key
+- Do NOT invent values that are not in the scenarios; derive them from the scenario text
+- Return ONLY valid JSON. No markdown fences. No prose.
+
+Gherkin scenarios:
+{gherkin_json}
+"""
+
+
+def test_data_agent(gherkin_json: str, use_case: str) -> dict:
+    prompt = _TEST_DATA_PROMPT.format(use_case=use_case, gherkin_json=gherkin_json)
+    result = llm_codegen.invoke([HumanMessage(content=prompt)])
+    content = result.content.strip()
+    if content.startswith("```json"):
+        content = content[7:]
+    elif content.startswith("```"):
+        content = content[3:]
+    if content.endswith("```"):
+        content = content[:-3]
+    content = content.strip()
+    try:
+        data = json.loads(content)
+        return {k: str(v) for k, v in data.items() if isinstance(v, (str, int, float, bool))}
+    except Exception:
+        return {}
 
 
 # ─── Agent 1: Cucumber .feature file ─────────────────────────────────────────
@@ -176,26 +245,31 @@ POM import : from pages.{module_name} import {class_name}
 {page_content}
 ━━━ END OF POM SOURCE ━━━
 
-━━━ TEST CREDENTIALS (use these EXACT strings — no placeholders) ━━━
-Valid login  : username="Admin"    password="admin123"
-Invalid login: username="WrongUser" password="wrongpass"
-For empty-field tests use "" for the empty field and "Admin"/"admin123" for the other.
+━━━ TEST DATA — use the test_data fixture, do NOT hardcode values ━━━
+A session-scoped pytest fixture `test_data` loads tests/test_data.json automatically.
+The following data is available under test_data["suites"]["{slug}"]:
+{suite_test_data}
+
+Access pattern in every test:
+    td = test_data["suites"]["{slug}"]
+    # then use td["valid_username"], td["invalid_password"], td["empty_value"], etc.
+
 Successful login redirects to the dashboard — it does NOT show a toast — so always use
 assert_on_dashboard() for "login succeeds" assertions, NEVER assert_success_toast().
 
 ━━━ STRUCTURE RULES ━━━
 Imports (top of file, exactly these):
-    import re
     import pytest
-    from playwright.sync_api import Page, expect
+    from playwright.sync_api import Page
     from pages.{module_name} import {class_name}
 
 Each scenario → one function:
-    def test_<snake_case_scenario_name>(page: Page):
+    def test_<snake_case_scenario_name>(page: Page, test_data: dict):
+        td = test_data["suites"]["{slug}"]
         obj = {class_name}(page)
         obj.login()      # MANDATORY — always first
         obj.navigate()   # MANDATORY — always second
-        # call the POM methods listed above to implement the When/Then steps
+        # use td["key"] for all test data values; call POM methods for When/Then steps
 
 Rules:
 - ONLY call methods that actually exist in the POM source above — invent NOTHING
@@ -212,7 +286,18 @@ Gherkin scenarios:
 {gherkin_json}
 """
 
-def test_suite_agent(gherkin_json: str, use_case: str, class_name: str, module_name: str, scenario_count: int, page_content: str) -> str:
+
+def test_suite_agent(
+    gherkin_json: str,
+    use_case: str,
+    class_name: str,
+    module_name: str,
+    scenario_count: int,
+    page_content: str,
+    slug: str = "",
+    suite_test_data: dict | None = None,
+) -> str:
+    data_str = json.dumps(suite_test_data or {}, indent=2)
     prompt = _TEST_PROMPT.format(
         use_case=use_case,
         class_name=class_name,
@@ -220,6 +305,8 @@ def test_suite_agent(gherkin_json: str, use_case: str, class_name: str, module_n
         scenario_count=scenario_count,
         page_content=page_content,
         gherkin_json=gherkin_json,
+        slug=slug,
+        suite_test_data=data_str,
     )
     result = llm_codegen.invoke([HumanMessage(content=prompt)])
     return _strip_fences(result.content)
@@ -270,9 +357,13 @@ def save_approved_suite(
     page_content: str,
     test_content: str,
     scenario_count: int,
+    suite_test_data: dict | None = None,
 ) -> str:
     """Save pre-generated content to disk and register in manifest. Returns suite_id."""
-    return save_suite_files(use_case, slug, feature_content, page_content, test_content, scenario_count)
+    suite_id = save_suite_files(use_case, slug, feature_content, page_content, test_content, scenario_count)
+    if suite_test_data:
+        _merge_test_data(slug, suite_test_data)
+    return suite_id
 
 
 def get_suite_files(suite_id: str) -> dict:
@@ -302,6 +393,7 @@ def delete_suite(suite_id: str) -> None:
             p.unlink()
     manifest["suites"] = [s for s in manifest["suites"] if s["id"] != suite_id]
     _save_manifest(manifest)
+    _remove_test_data(suite["slug"])
 
 
 def regenerate_scripts_for_suite(suite_id: str, feature_content: str, feedback: str) -> dict:
@@ -317,9 +409,14 @@ def regenerate_scripts_for_suite(suite_id: str, feature_content: str, feedback: 
     mod_name      = f"{slug}_page"
     scenario_count = suite.get("scenario_count", 0)
 
+    suite_test_data = _load_test_data().get("suites", {}).get(slug, {})
+
     augmented = f"Feature file:\n{feature_content}\n\nReviewer feedback on scripts: {feedback}"
     page_content = page_object_agent(augmented, use_case, cls_name)
-    test_content = test_suite_agent(augmented, use_case, cls_name, mod_name, scenario_count, page_content)
+    test_content = test_suite_agent(
+        augmented, use_case, cls_name, mod_name, scenario_count,
+        page_content, slug=slug, suite_test_data=suite_test_data,
+    )
 
     return {
         "use_case":    use_case,
@@ -482,9 +579,13 @@ def generate_suite_preview(gherkin_json: str) -> dict:
     cls_name  = _class_name(slug)
     mod_name  = f"{slug}_page"
 
+    suite_test_data = test_data_agent(gherkin_json, use_case)
     feature_content = feature_file_agent(gherkin_json, use_case)
     page_content    = page_object_agent(gherkin_json, use_case, cls_name)
-    test_content    = test_suite_agent(gherkin_json, use_case, cls_name, mod_name, len(scenarios), page_content)
+    test_content    = test_suite_agent(
+        gherkin_json, use_case, cls_name, mod_name, len(scenarios),
+        page_content, slug=slug, suite_test_data=suite_test_data,
+    )
 
     return {
         "use_case":        use_case,
@@ -493,6 +594,7 @@ def generate_suite_preview(gherkin_json: str) -> dict:
         "feature_content": feature_content,
         "page_content":    page_content,
         "test_content":    test_content,
+        "suite_test_data": suite_test_data,
     }
 
 
@@ -509,9 +611,16 @@ def regenerate_scripts(gherkin_json: str, feedback: str) -> dict:
     cls_name  = _class_name(slug)
     mod_name  = f"{slug}_page"
 
+    # Load existing test data for this slug (may not exist yet for preview regeneration)
+    existing_td = _load_test_data()
+    suite_test_data = existing_td.get("suites", {}).get(slug) or test_data_agent(gherkin_json, use_case)
+
     augmented = gherkin_json + f"\n\nReviewer feedback on scripts: {feedback}"
     page_content = page_object_agent(augmented, use_case, cls_name)
-    test_content = test_suite_agent(augmented, use_case, cls_name, mod_name, len(scenarios), page_content)
+    test_content = test_suite_agent(
+        augmented, use_case, cls_name, mod_name, len(scenarios),
+        page_content, slug=slug, suite_test_data=suite_test_data,
+    )
 
     return {
         "use_case":    use_case,
@@ -531,6 +640,7 @@ def generate_suite_only(gherkin_json: str) -> dict:
         preview["page_content"],
         preview["test_content"],
         preview["scenario_count"],
+        suite_test_data=preview.get("suite_test_data"),
     )
     return {
         "suite_id":        suite_id,
@@ -554,11 +664,17 @@ def generate_and_run_suite(gherkin_json: str) -> dict:
     cls_name  = _class_name(slug)
     mod_name  = f"{slug}_page"
 
+    suite_test_data = test_data_agent(gherkin_json, use_case)
     feature_content = feature_file_agent(gherkin_json, use_case)
     page_content    = page_object_agent(gherkin_json, use_case, cls_name)
-    test_content    = test_suite_agent(gherkin_json, use_case, cls_name, mod_name, len(scenarios), page_content)
+    test_content    = test_suite_agent(
+        gherkin_json, use_case, cls_name, mod_name, len(scenarios),
+        page_content, slug=slug, suite_test_data=suite_test_data,
+    )
 
     suite_id = save_suite_files(use_case, slug, feature_content, page_content, test_content, len(scenarios))
+    if suite_test_data:
+        _merge_test_data(slug, suite_test_data)
 
     test_file = SUITES_DIR / f"test_{slug}.py"
     execution_results = run_test_file(test_file)

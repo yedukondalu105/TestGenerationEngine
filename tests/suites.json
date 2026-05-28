@@ -50,6 +50,23 @@
         "total": 26,
         "overall_status": "Unknown"
       }
+    },
+    {
+      "id": "2a04bf24",
+      "use_case": "Dashboard Access",
+      "slug": "dashboard_access",
+      "created_at": "2026-05-27T08:32:39.061395",
+      "feature_file": "features/dashboard_access.feature",
+      "page_file": "pages/dashboard_access_page.py",
+      "test_file": "test_suites/test_dashboard_access.py",
+      "scenario_count": 11,
+      "last_run_at": "2026-05-27T08:33:48.900781",
+      "last_results": {
+        "passed": 1,
+        "failed": 0,
+        "total": 11,
+        "overall_status": "Unknown"
+      }
     }
   ]
 }
