@@ -67,6 +67,23 @@
         "total": 11,
         "overall_status": "Unknown"
       }
+    },
+    {
+      "id": "2e8b6550",
+      "use_case": "Candidate Management",
+      "slug": "candidate_management",
+      "created_at": "2026-05-28T07:31:11.404104",
+      "feature_file": "features/candidate_management.feature",
+      "page_file": "pages/candidate_management_page.py",
+      "test_file": "test_suites/test_candidate_management.py",
+      "scenario_count": 30,
+      "last_run_at": "2026-05-28T07:37:17.847014",
+      "last_results": {
+        "passed": 0,
+        "failed": 13,
+        "total": 30,
+        "overall_status": "Unknown"
+      }
     }
   ]
 }
