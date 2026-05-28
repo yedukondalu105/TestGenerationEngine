@@ -5,12 +5,13 @@ import {
   Send, Download, FileSpreadsheet, Bot, User,
   Loader2, ChevronDown, CheckCircle2, AlertCircle,
   Play, FlaskConical, X, RefreshCw, Clock, ChevronRight,
-  Trash2, Eye, Upload, MessageSquare, Save,
+  Trash2, Eye, Upload, MessageSquare, Save, Pencil,
 } from "lucide-react";
 import {
   generateTestCases, downloadExcel, downloadZip,
   generatePlaywrightTests, saveSuite, regenerateScenarios, regenerateScripts,
   getTestSuites, rerunTestSuite, getSuiteFiles, deleteSuite,
+  regenerateSuiteScripts, updateSuiteScripts,
   GenerateResponse, SuitePreviewResponse,
   PlaywrightResponse, RerunResponse, TestSuite, SuiteFilesResponse,
 } from "@/lib/api";
@@ -442,6 +443,142 @@ function PlaywrightResultsPanel({ data }: { data: PlaywrightResponse | RerunResp
 
 // ─── Saved Suites Panel ───────────────────────────────────────────────────────
 
+// ─── Suite Script Editor ──────────────────────────────────────────────────────
+
+function SuiteScriptEditor({
+  suiteId,
+  initialFiles,
+  onSaved,
+  onClose,
+}: {
+  suiteId: string;
+  initialFiles: SuiteFilesResponse;
+  onSaved: (updated: SuiteFilesResponse) => void;
+  onClose: () => void;
+}) {
+  const [tab, setTab]             = useState<"feature" | "pom" | "code">("feature");
+  const [featureText, setFeature] = useState(initialFiles.feature_content);
+  const [pomText, setPom]         = useState(initialFiles.page_content);
+  const [codeText, setCode]       = useState(initialFiles.test_content);
+  const [feedback, setFeedback]   = useState("");
+  const [regenerating, setRegen]  = useState(false);
+  const [saving, setSaving]       = useState(false);
+  const [error, setError]         = useState<string | null>(null);
+  const [savedOk, setSavedOk]     = useState(false);
+
+  const handleRegen = async () => {
+    setError(null);
+    setRegen(true);
+    try {
+      const result = await regenerateSuiteScripts(suiteId, featureText, feedback);
+      setPom(result.page_content);
+      setCode(result.test_content);
+      setTab("pom");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Re-generation failed");
+    } finally {
+      setRegen(false);
+    }
+  };
+
+  const handleSave = async () => {
+    setError(null);
+    setSaving(true);
+    try {
+      await updateSuiteScripts(suiteId, featureText, pomText, codeText);
+      setSavedOk(true);
+      onSaved({ ...initialFiles, feature_content: featureText, page_content: pomText, test_content: codeText });
+      setTimeout(() => setSavedOk(false), 3000);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const tabs: { key: typeof tab; label: string }[] = [
+    { key: "feature", label: "Feature File" },
+    { key: "pom",     label: "Page Object" },
+    { key: "code",    label: "Test Code" },
+  ];
+
+  return (
+    <div className="border-t border-violet-200 bg-white">
+      <div className="flex items-center justify-between px-4 py-2 bg-violet-50 border-b border-violet-200">
+        <span className="text-xs font-semibold text-violet-800 flex items-center gap-1.5">
+          <Pencil className="w-3.5 h-3.5" /> Edit Scripts
+        </span>
+        <button onClick={onClose} className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1">
+          <X className="w-3.5 h-3.5" /> Close
+        </button>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex border-b border-gray-200 overflow-x-auto bg-white">
+        {tabs.map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)}
+            className={`px-3 py-1.5 text-xs whitespace-nowrap font-medium transition-colors ${tab === t.key ? "border-b-2 border-violet-500 text-violet-700" : "text-gray-500 hover:text-gray-700"}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="p-3">
+        {tab === "feature" && (
+          <textarea value={featureText} onChange={e => setFeature(e.target.value)} rows={12}
+            className="w-full font-mono text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 resize-y outline-none focus:border-violet-300 focus:ring-1 focus:ring-violet-100" />
+        )}
+        {tab === "pom" && (
+          <textarea value={pomText} onChange={e => setPom(e.target.value)} rows={12}
+            className="w-full font-mono text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 resize-y outline-none focus:border-violet-300 focus:ring-1 focus:ring-violet-100" />
+        )}
+        {tab === "code" && (
+          <textarea value={codeText} onChange={e => setCode(e.target.value)} rows={12}
+            className="w-full font-mono text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 resize-y outline-none focus:border-violet-300 focus:ring-1 focus:ring-violet-100" />
+        )}
+      </div>
+
+      <div className="px-3 pb-3 space-y-2 border-t border-gray-100 pt-2">
+        <label className="block text-xs font-medium text-gray-700">Feedback for re-generating POM &amp; Test (uses current Feature file as context)</label>
+        <textarea value={feedback} onChange={e => setFeedback(e.target.value)}
+          placeholder="E.g. Use more specific locators, fix assertion for empty fields…"
+          rows={2}
+          className="w-full resize-none rounded-lg border border-gray-300 focus:border-violet-400 focus:ring-1 focus:ring-violet-200 px-3 py-2 text-xs text-gray-900 placeholder-gray-400 bg-gray-50 outline-none" />
+
+        {error && (
+          <div className="flex items-center gap-2 text-red-600 text-xs bg-red-50 px-3 py-2 rounded-lg border border-red-200">
+            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> {error}
+          </div>
+        )}
+
+        <div className="flex items-center gap-2">
+          <button onClick={handleRegen} disabled={regenerating || saving}
+            className="flex items-center gap-1.5 px-3 py-1.5 border border-violet-400 text-violet-700 hover:bg-violet-50 disabled:opacity-50 rounded-lg text-xs font-medium transition-colors">
+            {regenerating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+            Re-generate POM &amp; Test
+          </button>
+          <button onClick={handleSave} disabled={saving || regenerating}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ml-auto ${
+              savedOk
+                ? "bg-green-600 text-white"
+                : "bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white"
+            }`}>
+            {saving
+              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving…</>
+              : savedOk
+                ? <><CheckCircle2 className="w-3.5 h-3.5" /> Saved — re-run to apply</>
+                : <><Save className="w-3.5 h-3.5" /> Save Changes</>
+            }
+          </button>
+        </div>
+        {savedOk && (
+          <p className="text-xs text-green-600">Scripts updated on disk. Run the suite again to test the new version.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SuiteCard({
   suite,
   onRun,
@@ -456,6 +593,7 @@ function SuiteCard({
   runResult: RerunResponse | null;
 }) {
   const [expanded, setExpanded]         = useState(false);
+  const [editMode, setEditMode]         = useState(false);
   const [files, setFiles]               = useState<SuiteFilesResponse | null>(null);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [filesError, setFilesError]     = useState<string | null>(null);
@@ -463,21 +601,30 @@ function SuiteCard({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const loadFiles = async () => {
+    if (files || loadingFiles) return;
+    setLoadingFiles(true);
+    setFilesError(null);
+    try {
+      const f = await getSuiteFiles(suite.id);
+      setFiles(f);
+    } catch (e: unknown) {
+      setFilesError(e instanceof Error ? e.message : "Failed to load files");
+    } finally {
+      setLoadingFiles(false);
+    }
+  };
+
   const handleExpand = async () => {
     const next = !expanded;
     setExpanded(next);
-    if (next && !files && !loadingFiles) {
-      setLoadingFiles(true);
-      setFilesError(null);
-      try {
-        const f = await getSuiteFiles(suite.id);
-        setFiles(f);
-      } catch (e: unknown) {
-        setFilesError(e instanceof Error ? e.message : "Failed to load files");
-      } finally {
-        setLoadingFiles(false);
-      }
-    }
+    if (next) await loadFiles();
+  };
+
+  const handleEditScripts = async () => {
+    await loadFiles();
+    setExpanded(true);
+    setEditMode(true);
   };
 
   const handleDeleteClick = () => {
@@ -550,6 +697,17 @@ function SuiteCard({
             }
           </button>
           <button
+            onClick={handleEditScripts}
+            title="Edit scripts"
+            className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+              editMode
+                ? "bg-violet-600 text-white border-violet-600"
+                : "border-violet-300 text-violet-600 hover:bg-violet-50"
+            }`}
+          >
+            <Pencil className="w-3 h-3" />
+          </button>
+          <button
             onClick={handleDeleteClick}
             className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
               confirmDelete
@@ -564,7 +722,7 @@ function SuiteCard({
         </div>
       </div>
 
-      {/* Expanded: file paths + file viewer */}
+      {/* Expanded: file paths + file viewer or script editor */}
       {expanded && (
         <div className="border-t border-gray-100">
           <div className="px-4 py-2 bg-white text-xs text-gray-400 font-mono space-y-0.5">
@@ -581,7 +739,19 @@ function SuiteCard({
           {filesError && (
             <div className="px-4 py-2 text-xs text-red-600 bg-red-50">{filesError}</div>
           )}
-          {files && (
+
+          {/* Edit mode: inline script editor */}
+          {files && editMode && (
+            <SuiteScriptEditor
+              suiteId={suite.id}
+              initialFiles={files}
+              onSaved={(updated) => { setFiles(updated); setEditMode(false); }}
+              onClose={() => setEditMode(false)}
+            />
+          )}
+
+          {/* View mode: read-only file viewer */}
+          {files && !editMode && (
             <div className="border-t border-gray-100">
               <div className="flex border-b border-gray-200 bg-white overflow-x-auto">
                 {(["feature", "pom", "code"] as const).map(k => (
@@ -1079,29 +1249,51 @@ export default function ChatInterface() {
                 <Bot className="w-8 h-8 text-white" />
               </div>
               <h2 className="text-xl font-semibold text-gray-800 mb-1">AgenticQAEngine</h2>
-              <p className="text-sm text-gray-500 max-w-sm mx-auto mb-8">
-                Describe a feature to generate BDD scenarios, review them, then generate and run Playwright tests end-to-end.
+              <p className="text-sm text-gray-500 max-w-md mx-auto mb-8">
+                Describe a feature to generate BDD scenarios. Two human review gates let you inspect, edit, and approve before anything is saved or run.
               </p>
 
-              {/* 3-step workflow diagram */}
-              <div className="flex items-start justify-center gap-3 mb-8 px-4">
-                <div className="flex flex-col items-center gap-2 w-28">
-                  <div className="w-11 h-11 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-base shadow-sm">①</div>
-                  <span className="text-xs font-semibold text-gray-700 text-center">Generate Scenarios</span>
-                  <span className="text-xs text-gray-400 text-center">Gherkin BDD via RAG</span>
+              {/* 5-step workflow diagram */}
+              <div className="flex items-start justify-center gap-1.5 mb-8 px-2 flex-wrap">
+                {/* Step 1 */}
+                <div className="flex flex-col items-center gap-1.5 w-24">
+                  <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-sm shadow-sm">①</div>
+                  <span className="text-xs font-semibold text-gray-700 text-center leading-tight">Generate Scenarios</span>
+                  <span className="text-xs text-gray-400 text-center leading-tight">Gherkin via RAG</span>
                 </div>
-                <div className="mt-3.5 text-gray-300"><ChevronRight className="w-5 h-5" /></div>
-                <div className="flex flex-col items-center gap-2 w-28">
-                  <div className="w-11 h-11 rounded-full bg-violet-100 flex items-center justify-center text-violet-600 font-bold text-base shadow-sm">②</div>
-                  <span className="text-xs font-semibold text-gray-700 text-center">Review &amp; Generate Tests</span>
-                  <span className="text-xs text-gray-400 text-center">Human-in-the-Loop</span>
+                <div className="mt-3 text-gray-300"><ChevronRight className="w-4 h-4" /></div>
+                {/* Step 2 — Gate 1 */}
+                <div className="flex flex-col items-center gap-1.5 w-24">
+                  <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center text-amber-600 font-bold text-sm shadow-sm ring-2 ring-amber-300 ring-offset-1">②</div>
+                  <span className="text-xs font-semibold text-gray-700 text-center leading-tight">Review Scenarios</span>
+                  <span className="text-xs text-amber-500 text-center leading-tight font-medium">Human Gate 1</span>
                 </div>
-                <div className="mt-3.5 text-gray-300"><ChevronRight className="w-5 h-5" /></div>
-                <div className="flex flex-col items-center gap-2 w-28">
-                  <div className="w-11 h-11 rounded-full bg-green-100 flex items-center justify-center text-green-600 font-bold text-base shadow-sm">③</div>
-                  <span className="text-xs font-semibold text-gray-700 text-center">Run Tests</span>
-                  <span className="text-xs text-gray-400 text-center">Saved Test Suites</span>
+                <div className="mt-3 text-gray-300"><ChevronRight className="w-4 h-4" /></div>
+                {/* Step 3 */}
+                <div className="flex flex-col items-center gap-1.5 w-24">
+                  <div className="w-10 h-10 rounded-full bg-violet-100 flex items-center justify-center text-violet-600 font-bold text-sm shadow-sm">③</div>
+                  <span className="text-xs font-semibold text-gray-700 text-center leading-tight">Generate Scripts</span>
+                  <span className="text-xs text-gray-400 text-center leading-tight">Playwright POM</span>
                 </div>
+                <div className="mt-3 text-gray-300"><ChevronRight className="w-4 h-4" /></div>
+                {/* Step 4 — Gate 2 */}
+                <div className="flex flex-col items-center gap-1.5 w-24">
+                  <div className="w-10 h-10 rounded-full bg-violet-100 flex items-center justify-center text-violet-600 font-bold text-sm shadow-sm ring-2 ring-violet-400 ring-offset-1">④</div>
+                  <span className="text-xs font-semibold text-gray-700 text-center leading-tight">Review Scripts</span>
+                  <span className="text-xs text-violet-500 text-center leading-tight font-medium">Human Gate 2</span>
+                </div>
+                <div className="mt-3 text-gray-300"><ChevronRight className="w-4 h-4" /></div>
+                {/* Step 5 */}
+                <div className="flex flex-col items-center gap-1.5 w-24">
+                  <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center text-green-600 font-bold text-sm shadow-sm">⑤</div>
+                  <span className="text-xs font-semibold text-gray-700 text-center leading-tight">Run Tests</span>
+                  <span className="text-xs text-gray-400 text-center leading-tight">Saved Test Suites</span>
+                </div>
+              </div>
+              {/* Gate legend */}
+              <div className="flex items-center justify-center gap-6 mb-6 text-xs text-gray-500">
+                <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> Review &amp; approve / re-generate / upload JSON</span>
+                <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-violet-400 inline-block" /> Edit scripts inline / re-generate / save</span>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-w-xl mx-auto">

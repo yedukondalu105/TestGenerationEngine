@@ -211,6 +211,40 @@ export async function deleteSuite(suiteId: string): Promise<void> {
   }
 }
 
+export async function regenerateSuiteScripts(
+  suiteId: string,
+  featureContent: string,
+  feedback: string,
+): Promise<RegenerateScriptsResponse> {
+  const res = await fetch(`/api/test-suites/${suiteId}/regenerate-scripts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ feature_content: featureContent, feedback }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `Re-generation failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function updateSuiteScripts(
+  suiteId: string,
+  featureContent: string,
+  pageContent: string,
+  testContent: string,
+): Promise<void> {
+  const res = await fetch(`/api/test-suites/${suiteId}/scripts`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ feature_content: featureContent, page_content: pageContent, test_content: testContent }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `Save failed (${res.status})`);
+  }
+}
+
 export async function runPlaywright(final_output: string): Promise<PlaywrightResponse> {
   const res = await fetch("/api/playwright-run", {
     method: "POST",

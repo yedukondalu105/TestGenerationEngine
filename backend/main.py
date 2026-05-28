@@ -20,6 +20,7 @@ from zip_generator import generate_zip
 from playwright_agent import (
     generate_suite_preview, save_approved_suite, regenerate_scripts,
     get_suite_files, delete_suite,
+    regenerate_scripts_for_suite, update_suite_scripts,
     generate_suite_only, generate_and_run_suite, rerun_suite, list_suites,
 )
 
@@ -83,6 +84,17 @@ class RegenerateScriptsRequest(BaseModel):
 class RegenerateScenariosRequest(BaseModel):
     question: str
     feedback: str
+
+
+class SuiteRegenerateScriptsRequest(BaseModel):
+    feature_content: str
+    feedback: str
+
+
+class SuiteUpdateScriptsRequest(BaseModel):
+    feature_content: str
+    page_content: str
+    test_content: str
 
 
 @app.post("/api/generate")
@@ -282,6 +294,33 @@ async def delete_test_suite(suite_id: str):
     try:
         await asyncio.to_thread(delete_suite, suite_id)
         return {"deleted": suite_id}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail=traceback.format_exc())
+
+
+@app.post("/api/test-suites/{suite_id}/regenerate-scripts")
+async def regenerate_suite_scripts(suite_id: str, request: SuiteRegenerateScriptsRequest):
+    try:
+        result = await asyncio.to_thread(
+            regenerate_scripts_for_suite, suite_id, request.feature_content, request.feedback
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail=traceback.format_exc())
+
+
+@app.put("/api/test-suites/{suite_id}/scripts")
+async def save_suite_scripts(suite_id: str, request: SuiteUpdateScriptsRequest):
+    try:
+        await asyncio.to_thread(
+            update_suite_scripts, suite_id,
+            request.feature_content, request.page_content, request.test_content,
+        )
+        return {"saved": suite_id}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception:

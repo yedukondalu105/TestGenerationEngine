@@ -304,6 +304,50 @@ def delete_suite(suite_id: str) -> None:
     _save_manifest(manifest)
 
 
+def regenerate_scripts_for_suite(suite_id: str, feature_content: str, feedback: str) -> dict:
+    """Re-generate POM + test for a saved suite using the (possibly edited) feature file as context. No save."""
+    manifest = _load_manifest()
+    suite = next((s for s in manifest["suites"] if s["id"] == suite_id), None)
+    if not suite:
+        raise ValueError(f"Suite '{suite_id}' not found")
+
+    use_case      = suite["use_case"]
+    slug          = suite["slug"]
+    cls_name      = _class_name(slug)
+    mod_name      = f"{slug}_page"
+    scenario_count = suite.get("scenario_count", 0)
+
+    augmented = f"Feature file:\n{feature_content}\n\nReviewer feedback on scripts: {feedback}"
+    page_content = page_object_agent(augmented, use_case, cls_name)
+    test_content = test_suite_agent(augmented, use_case, cls_name, mod_name, scenario_count, page_content)
+
+    return {
+        "use_case":    use_case,
+        "slug":        slug,
+        "page_content": page_content,
+        "test_content": test_content,
+    }
+
+
+def update_suite_scripts(suite_id: str, feature_content: str, page_content: str, test_content: str) -> None:
+    """Overwrite all 3 files for a saved suite and reset last_results (scripts changed, needs re-run)."""
+    manifest = _load_manifest()
+    suite = next((s for s in manifest["suites"] if s["id"] == suite_id), None)
+    if not suite:
+        raise ValueError(f"Suite '{suite_id}' not found")
+
+    (TESTS_DIR / suite["feature_file"]).write_text(feature_content, encoding="utf-8")
+    (TESTS_DIR / suite["page_file"]).write_text(page_content,    encoding="utf-8")
+    (TESTS_DIR / suite["test_file"]).write_text(test_content,     encoding="utf-8")
+
+    for s in manifest["suites"]:
+        if s["id"] == suite_id:
+            s["last_run_at"]  = None
+            s["last_results"] = None
+            break
+    _save_manifest(manifest)
+
+
 def update_suite_results(suite_id: str, execution_results: dict, review: str) -> None:
     review_data: dict = {}
     try:
