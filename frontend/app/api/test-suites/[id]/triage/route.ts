@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { backendFetch } from "@/lib/backendFetch";
 
-export const maxDuration = 700;
+export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
   const segments = req.nextUrl.pathname.split("/");
@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const { status, data } = await backendFetch(
-      `http://127.0.0.1:8000/api/test-suites/${id}/run`,
+      `http://127.0.0.1:8000/api/test-suites/${id}/triage`,
       "POST",
       JSON.stringify(body),
     );

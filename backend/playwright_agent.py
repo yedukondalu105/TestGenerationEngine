@@ -15,12 +15,13 @@ load_dotenv(override=True)
 
 APP_URL = os.getenv("PLAYWRIGHT_APP_URL", "")
 
-TESTS_DIR      = Path(__file__).parent.parent / "tests"
-FEATURES_DIR   = TESTS_DIR / "features"
-PAGES_DIR      = TESTS_DIR / "pages"
-SUITES_DIR     = TESTS_DIR / "test_suites"
-MANIFEST       = TESTS_DIR / "suites.json"
-TEST_DATA_FILE = TESTS_DIR / "test_data.json"
+TESTS_DIR             = Path(__file__).parent.parent / "tests"
+FEATURES_DIR          = TESTS_DIR / "features"
+PAGES_DIR             = TESTS_DIR / "pages"
+SUITES_DIR            = TESTS_DIR / "test_suites"
+MANIFEST              = TESTS_DIR / "suites.json"
+TEST_DATA_FILE        = TESTS_DIR / "test_data.json"
+FAILURE_ARTIFACTS_DIR = TESTS_DIR / "failure_artifacts"
 
 llm_codegen = ChatOpenAI(model="gpt-4o",     temperature=0.1)
 llm_review  = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
@@ -467,7 +468,7 @@ def update_suite_results(suite_id: str, execution_results: dict, review: str) ->
 
 # ─── Test runner ──────────────────────────────────────────────────────────────
 
-def run_test_file(test_file: Path) -> dict:
+def run_test_file(test_file: Path, headed: bool = False) -> dict:
     results: dict = {
         "passed": 0, "failed": 0, "error": 0, "total": 0,
         "tests": [], "raw_output": "", "execution_error": None,
@@ -482,6 +483,8 @@ def run_test_file(test_file: Path) -> dict:
         "--tb=short", "-v",
         "--browser", "chromium",
     ]
+    if headed:
+        cmd.append("--headed")
     try:
         proc = subprocess.run(
             cmd,
@@ -698,7 +701,7 @@ def generate_and_run_suite(gherkin_json: str) -> dict:
     }
 
 
-def rerun_suite(suite_id: str) -> dict:
+def rerun_suite(suite_id: str, headed: bool = False) -> dict:
     """Re-run a previously saved test suite by ID."""
     manifest = _load_manifest()
     suite = next((s for s in manifest["suites"] if s["id"] == suite_id), None)
@@ -709,7 +712,7 @@ def rerun_suite(suite_id: str) -> dict:
     if not test_file.exists():
         raise FileNotFoundError(f"Test file missing: {test_file}")
 
-    execution_results = run_test_file(test_file)
+    execution_results = run_test_file(test_file, headed=headed)
     review = "{}"
     update_suite_results(suite_id, execution_results, review)
 
@@ -723,3 +726,163 @@ def rerun_suite(suite_id: str) -> dict:
 
 def list_suites() -> list:
     return _load_manifest().get("suites", [])
+
+
+# ─── Failure triage agent ─────────────────────────────────────────────────────
+
+def triage_failures_agent(suite_id: str, execution_results: dict) -> dict:
+    """Classify each failed test and propose a targeted, minimal code fix."""
+    manifest = _load_manifest()
+    suite = next((s for s in manifest["suites"] if s["id"] == suite_id), None)
+    if not suite:
+        raise ValueError(f"Suite '{suite_id}' not found")
+
+    pom_path     = PAGES_DIR   / suite["page_file"]
+    test_path    = TESTS_DIR   / suite["test_file"]
+    feature_path = FEATURES_DIR / suite["feature_file"]
+
+    pom_content     = pom_path.read_text(encoding="utf-8")     if pom_path.exists()     else ""
+    test_content    = test_path.read_text(encoding="utf-8")    if test_path.exists()    else ""
+    feature_content = feature_path.read_text(encoding="utf-8") if feature_path.exists() else ""
+
+    failed_tests = [t for t in execution_results.get("tests", []) if t["outcome"] != "passed"]
+    if not failed_tests:
+        return {"suite_id": suite_id, "triage": []}
+
+    failures_detail = []
+    for t in failed_tests:
+        dom_snapshot = ""
+        dom_file = FAILURE_ARTIFACTS_DIR / f"{t['name']}.html"
+        if dom_file.exists():
+            dom_snapshot = dom_file.read_text(encoding="utf-8")[:3000]
+        failures_detail.append({
+            "test_name":    t["name"],
+            "error_message": t.get("message", "")[:1000],
+            "duration":     t.get("duration", 0),
+            "dom_snapshot": dom_snapshot,
+        })
+
+    prompt = f"""You are a senior QA engineer triaging automated Playwright test failures.
+
+Suite: {suite['use_case']}
+
+=== POM FILE ({suite['page_file']}) ===
+{pom_content[:4000]}
+
+=== TEST FILE ({suite['test_file']}) ===
+{test_content[:4000]}
+
+=== FEATURE FILE ===
+{feature_content[:2000]}
+
+=== FAILED TESTS (with DOM snapshots where available) ===
+{json.dumps(failures_detail, indent=2)}
+
+For each failed test classify the root cause into EXACTLY one of:
+- "product_defect"  — test is correct, the app is broken (server error, missing data, wrong business logic)
+- "locator_drift"   — a selector no longer matches (element not found, strict mode violation, DOM changed)
+- "bad_assertion"   — the LLM generated a wrong expected value at code-gen time (wrong text, wrong count, wrong state)
+- "flaky_timeout"   — timing/race condition (timeout waiting for element, networkidle, animation not complete)
+
+Rules:
+1. For "product_defect" set proposed_fix to null — NEVER suggest a code fix for an app bug.
+2. For all other categories provide a specific, minimal code change:
+   - old_code must be an EXACT substring of the POM or test file shown above.
+   - new_code must be the corrected replacement.
+3. If a DOM snapshot is present use it to find a more reliable selector.
+
+Return a JSON object with EXACTLY this structure (no markdown, no prose):
+{{
+  "triage": [
+    {{
+      "test_name": "exact_test_function_name",
+      "category": "product_defect|locator_drift|bad_assertion|flaky_timeout",
+      "confidence": "high|medium|low",
+      "root_cause": "1-2 sentence explanation",
+      "proposed_fix": {{
+        "file": "pom",
+        "description": "what this change does",
+        "old_code": "exact string to replace",
+        "new_code": "replacement string"
+      }}
+    }}
+  ]
+}}
+"""
+    raw = llm_codegen.invoke([HumanMessage(content=prompt)]).content.strip()
+    if raw.startswith("```json"):
+        raw = raw[7:]
+    elif raw.startswith("```"):
+        raw = raw[3:]
+    if raw.endswith("```"):
+        raw = raw[:-3]
+    raw = raw.strip()
+
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        parsed = {
+            "triage": [
+                {
+                    "test_name":    t["test_name"],
+                    "category":     "product_defect",
+                    "confidence":   "low",
+                    "root_cause":   "Triage LLM returned unparseable JSON — review manually.",
+                    "proposed_fix": None,
+                }
+                for t in failures_detail
+            ]
+        }
+
+    return {"suite_id": suite_id, "triage": parsed.get("triage", [])}
+
+
+def apply_test_fix(suite_id: str, fixes: list) -> dict:
+    """Apply a list of agent-proposed code fixes to POM or test files."""
+    manifest = _load_manifest()
+    suite = next((s for s in manifest["suites"] if s["id"] == suite_id), None)
+    if not suite:
+        raise ValueError(f"Suite '{suite_id}' not found")
+
+    pom_path  = PAGES_DIR / suite["page_file"]
+    test_path = TESTS_DIR / suite["test_file"]
+
+    pom_content  = pom_path.read_text(encoding="utf-8")  if pom_path.exists()  else ""
+    test_content = test_path.read_text(encoding="utf-8") if test_path.exists() else ""
+
+    applied, errors = [], []
+
+    for fix in fixes:
+        file_target = fix.get("file", "pom")
+        old_code    = fix.get("old_code", "")
+        new_code    = fix.get("new_code", "")
+        test_name   = fix.get("test_name", "")
+
+        if not old_code or not new_code:
+            errors.append({"test_name": test_name, "error": "Empty old_code or new_code"})
+            continue
+
+        if file_target == "pom":
+            if old_code in pom_content:
+                pom_content = pom_content.replace(old_code, new_code, 1)
+                applied.append({"test_name": test_name, "file": "pom"})
+            else:
+                errors.append({"test_name": test_name, "error": "old_code not found in POM file"})
+        else:
+            if old_code in test_content:
+                test_content = test_content.replace(old_code, new_code, 1)
+                applied.append({"test_name": test_name, "file": "test"})
+            else:
+                errors.append({"test_name": test_name, "error": "old_code not found in test file"})
+
+    if any(f["file"] == "pom" for f in applied):
+        pom_path.write_text(pom_content, encoding="utf-8")
+    if any(f["file"] == "test" for f in applied):
+        test_path.write_text(test_content, encoding="utf-8")
+
+    return {
+        "applied":      applied,
+        "errors":       errors,
+        "page_content": pom_content,
+        "test_content": test_content,
+    }

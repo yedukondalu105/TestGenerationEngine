@@ -12,8 +12,11 @@ import {
   generatePlaywrightTests, saveSuite, regenerateScenarios, regenerateScripts,
   getTestSuites, rerunTestSuite, getSuiteFiles, deleteSuite,
   regenerateSuiteScripts, updateSuiteScripts,
+  triageFailures, applyFix,
   GenerateResponse, SuitePreviewResponse,
   PlaywrightResponse, RerunResponse, TestSuite, SuiteFilesResponse,
+  TriageItem, TriageResponse, ApplyFixItem, ApplyFixResponse,
+  PlaywrightExecutionResults,
 } from "@/lib/api";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -579,6 +582,236 @@ function SuiteScriptEditor({
   );
 }
 
+// ─── Triage Gate ─────────────────────────────────────────────────────────────
+
+const CATEGORY_META: Record<string, { label: string; color: string; bg: string }> = {
+  product_defect: { label: "Product Defect", color: "text-red-700",    bg: "bg-red-100 border-red-300" },
+  locator_drift:  { label: "Locator Drift",  color: "text-orange-700", bg: "bg-orange-100 border-orange-300" },
+  bad_assertion:  { label: "Bad Assertion",  color: "text-yellow-700", bg: "bg-yellow-100 border-yellow-300" },
+  flaky_timeout:  { label: "Flaky / Timeout",color: "text-blue-700",   bg: "bg-blue-100 border-blue-300" },
+};
+
+const CONFIDENCE_COLOR: Record<string, string> = {
+  high:   "text-green-600",
+  medium: "text-yellow-600",
+  low:    "text-gray-400",
+};
+
+type TriageDecision = "apply" | "skip" | "bug";
+
+function TriageGate({
+  triage,
+  applying,
+  fixResult,
+  onApplyFixes,
+  onRerun,
+}: {
+  triage: TriageResponse;
+  applying: boolean;
+  fixResult: ApplyFixResponse | null;
+  onApplyFixes: (fixes: ApplyFixItem[]) => void;
+  onRerun: () => void;
+}) {
+  // Track which tests have been dismissed (skip/bug) — does not affect execution
+  const [dismissed, setDismissed] = useState<Record<string, "skip" | "bug">>({});
+  const [expanded, setExpanded]   = useState<Record<string, boolean>>({});
+
+  // Accumulate applied/errored test names across multiple apply calls
+  const [appliedNames, setAppliedNames] = useState<Set<string>>(new Set());
+  const [errorMap, setErrorMap]         = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!fixResult) return;
+    setAppliedNames(prev => {
+      const next = new Set(prev);
+      fixResult.applied.forEach(a => next.add(a.test_name));
+      return next;
+    });
+    setErrorMap(prev => {
+      const next = { ...prev };
+      fixResult.errors.forEach(e => { next[e.test_name] = e.error; });
+      return next;
+    });
+  }, [fixResult]);
+
+  const toggleExpanded = (name: string) =>
+    setExpanded(prev => ({ ...prev, [name]: !prev[name] }));
+
+  const applyOne = (item: TriageItem) => {
+    if (!item.proposed_fix || applying || appliedNames.has(item.test_name)) return;
+    onApplyFixes([{
+      test_name: item.test_name,
+      file:      item.proposed_fix.file,
+      old_code:  item.proposed_fix.old_code,
+      new_code:  item.proposed_fix.new_code,
+    }]);
+  };
+
+  const applyAll = () => {
+    const fixes: ApplyFixItem[] = triage.triage
+      .filter(item =>
+        item.proposed_fix &&
+        !appliedNames.has(item.test_name) &&
+        !dismissed[item.test_name] &&
+        item.category !== "product_defect",
+      )
+      .map(item => ({
+        test_name: item.test_name,
+        file:      item.proposed_fix!.file,
+        old_code:  item.proposed_fix!.old_code,
+        new_code:  item.proposed_fix!.new_code,
+      }));
+    if (fixes.length > 0) onApplyFixes(fixes);
+  };
+
+  const pendingCount = triage.triage.filter(
+    item =>
+      item.proposed_fix &&
+      !appliedNames.has(item.test_name) &&
+      !dismissed[item.test_name] &&
+      item.category !== "product_defect",
+  ).length;
+
+  const bugCount = Object.values(dismissed).filter(v => v === "bug").length;
+
+  return (
+    <div className="border-t border-amber-200 bg-amber-50">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-amber-200">
+        <span className="text-xs font-semibold text-amber-800 flex items-center gap-1.5">
+          <AlertCircle className="w-3.5 h-3.5" /> Failure Triage — {triage.triage.length} failure{triage.triage.length !== 1 ? "s" : ""} analysed
+        </span>
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          {Object.values(CATEGORY_META).map(m => (
+            <span key={m.label} className={`px-1.5 py-0.5 rounded border text-xs font-medium ${m.bg} ${m.color}`}>{m.label}</span>
+          ))}
+        </div>
+      </div>
+
+      {/* Per-failure rows */}
+      <div className="divide-y divide-amber-100">
+        {triage.triage.map(item => {
+          const meta      = CATEGORY_META[item.category] ?? CATEGORY_META.product_defect;
+          const isDefect  = item.category === "product_defect";
+          const isApplied = appliedNames.has(item.test_name);
+          const applyErr  = errorMap[item.test_name];
+          const dismiss   = dismissed[item.test_name];
+          const isOpen    = expanded[item.test_name];
+
+          return (
+            <div key={item.test_name} className={`px-4 py-3 ${isApplied ? "bg-green-50" : "bg-white"}`}>
+              <div className="flex items-start gap-2">
+                <span className={`font-bold text-sm mt-0.5 ${isApplied ? "text-green-600" : "text-red-500"}`}>
+                  {isApplied ? "✓" : "✗"}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-mono text-xs text-gray-800 font-semibold">{item.test_name}</span>
+                    <span className={`px-1.5 py-0.5 rounded border text-xs font-semibold ${meta.bg} ${meta.color}`}>{meta.label}</span>
+                    <span className={`text-xs font-medium ${CONFIDENCE_COLOR[item.confidence]}`}>{item.confidence} confidence</span>
+                    {isApplied && <span className="text-xs font-semibold text-green-700">fix applied</span>}
+                    {applyErr && <span className="text-xs text-red-600">error: {applyErr}</span>}
+                  </div>
+                  <p className="text-xs text-gray-600 mt-1">{item.root_cause}</p>
+
+                  {/* Proposed fix — expandable diff */}
+                  {item.proposed_fix && (
+                    <button
+                      onClick={() => toggleExpanded(item.test_name)}
+                      className="mt-1.5 text-xs text-violet-600 hover:text-violet-800 flex items-center gap-1"
+                    >
+                      <ChevronRight className={`w-3 h-3 transition-transform ${isOpen ? "rotate-90" : ""}`} />
+                      {item.proposed_fix.description}
+                    </button>
+                  )}
+                  {item.proposed_fix && isOpen && (
+                    <div className="mt-2 rounded-lg border border-gray-200 overflow-hidden text-xs">
+                      <div className="px-2 py-1 bg-red-50 border-b border-gray-200">
+                        <span className="font-semibold text-red-600 mr-1">−</span>
+                        <code className="text-red-700 whitespace-pre-wrap break-all">{item.proposed_fix.old_code}</code>
+                      </div>
+                      <div className="px-2 py-1 bg-green-50">
+                        <span className="font-semibold text-green-600 mr-1">+</span>
+                        <code className="text-green-700 whitespace-pre-wrap break-all">{item.proposed_fix.new_code}</code>
+                      </div>
+                    </div>
+                  )}
+
+                  {isDefect && (
+                    <p className="mt-1.5 text-xs text-red-600 bg-red-50 border border-red-200 px-2 py-1 rounded">
+                      ⚠ App bug — no code fix suggested. Mark and surface to the team.
+                    </p>
+                  )}
+                </div>
+
+                {/* Action buttons */}
+                {!isApplied && (
+                  <div className="flex items-center gap-1 flex-shrink-0 mt-0.5">
+                    {!isDefect && item.proposed_fix && (
+                      <button
+                        onClick={() => applyOne(item)}
+                        disabled={applying}
+                        className="flex items-center gap-1 px-2 py-1 text-xs rounded border font-medium transition-colors bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white border-violet-600"
+                      >
+                        {applying
+                          ? <Loader2 className="w-3 h-3 animate-spin" />
+                          : <CheckCircle2 className="w-3 h-3" />
+                        }
+                        Apply Fix
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setDismissed(prev => ({ ...prev, [item.test_name]: "skip" }))}
+                      className={`px-2 py-1 text-xs rounded border font-medium transition-colors ${dismiss === "skip" ? "bg-gray-600 text-white border-gray-600" : "border-gray-300 text-gray-500 hover:bg-gray-50"}`}
+                    >Skip</button>
+                    <button
+                      onClick={() => setDismissed(prev => ({ ...prev, [item.test_name]: "bug" }))}
+                      className={`px-2 py-1 text-xs rounded border font-medium transition-colors ${dismiss === "bug" ? "bg-red-600 text-white border-red-600" : "border-red-300 text-red-600 hover:bg-red-50"}`}
+                    >Bug</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Action bar */}
+      <div className="flex items-center justify-between px-4 py-2.5 border-t border-amber-200 bg-amber-50">
+        <div className="text-xs text-amber-700 flex items-center gap-3">
+          {appliedNames.size > 0 && (
+            <span className="text-green-700 font-medium">✓ {appliedNames.size} fix{appliedNames.size !== 1 ? "es" : ""} applied</span>
+          )}
+          {bugCount > 0 && <span className="text-red-600">{bugCount} marked as bug</span>}
+        </div>
+        <div className="flex items-center gap-2">
+          {appliedNames.size > 0 && (
+            <button
+              onClick={onRerun}
+              disabled={applying}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white text-xs font-medium rounded-lg transition-colors"
+            >
+              <RefreshCw className="w-3 h-3" /> Re-run Suite
+            </button>
+          )}
+          {pendingCount > 1 && (
+            <button
+              onClick={applyAll}
+              disabled={applying}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white text-xs font-medium rounded-lg transition-colors"
+            >
+              {applying
+                ? <><Loader2 className="w-3 h-3 animate-spin" /> Applying…</>
+                : <><CheckCircle2 className="w-3 h-3" /> Apply All ({pendingCount})</>
+              }
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SuiteCard({
   suite,
   onRun,
@@ -587,13 +820,19 @@ function SuiteCard({
   runResult,
 }: {
   suite: TestSuite;
-  onRun: () => void;
+  onRun: (headless: boolean) => void;
   onDelete: () => void;
   running: boolean;
   runResult: RerunResponse | null;
 }) {
   const [expanded, setExpanded]         = useState(false);
   const [editMode, setEditMode]         = useState(false);
+  const [headless, setHeadless]         = useState(true);
+  const [triage, setTriage]             = useState<TriageResponse | null>(null);
+  const [triaging, setTriaging]         = useState(false);
+  const [triageError, setTriageError]   = useState<string | null>(null);
+  const [applying, setApplying]         = useState(false);
+  const [fixResult, setFixResult]       = useState<ApplyFixResponse | null>(null);
   const [files, setFiles]               = useState<SuiteFilesResponse | null>(null);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [filesError, setFilesError]     = useState<string | null>(null);
@@ -639,6 +878,34 @@ function SuiteCard({
   };
 
   useEffect(() => () => { if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current); }, []);
+
+  const handleTriage = async (execResults: PlaywrightExecutionResults) => {
+    setTriaging(true);
+    setTriageError(null);
+    setTriage(null);
+    setFixResult(null);
+    try {
+      const result = await triageFailures(suite.id, execResults);
+      setTriage(result);
+    } catch (e: unknown) {
+      setTriageError(e instanceof Error ? e.message : "Triage failed");
+    } finally {
+      setTriaging(false);
+    }
+  };
+
+  const handleApplyFixes = async (fixes: ApplyFixItem[]) => {
+    setApplying(true);
+    setTriageError(null);
+    try {
+      const result = await applyFix(suite.id, fixes);
+      setFixResult(result);
+    } catch (e: unknown) {
+      setTriageError(e instanceof Error ? e.message : "Apply fix failed");
+    } finally {
+      setApplying(false);
+    }
+  };
 
   const last = suite.last_results;
 
@@ -687,7 +954,19 @@ function SuiteCard({
             </span>
           )}
           <button
-            onClick={onRun}
+            onClick={() => setHeadless(h => !h)}
+            disabled={running}
+            title={headless ? "Switch to headed (browser visible)" : "Switch to headless"}
+            className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+              headless
+                ? "border-gray-300 text-gray-500 hover:bg-gray-50"
+                : "border-violet-400 bg-violet-50 text-violet-700 hover:bg-violet-100"
+            }`}
+          >
+            {headless ? "Headless" : "Headed"}
+          </button>
+          <button
+            onClick={() => onRun(headless)}
             disabled={running}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white text-xs font-medium rounded-lg transition-colors"
           >
@@ -775,6 +1054,45 @@ function SuiteCard({
       {runResult && (
         <div className="border-t border-gray-200">
           <PlaywrightResultsPanel data={runResult} />
+
+          {/* Triage trigger — only shown when there are failures */}
+          {runResult.execution_results.failed > 0 && (
+            <div className="border-t border-amber-100">
+              {!triage && !triaging && (
+                <div className="flex items-center gap-3 px-4 py-2.5 bg-amber-50">
+                  <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                  <span className="text-xs text-amber-700 flex-1">
+                    {runResult.execution_results.failed} test{runResult.execution_results.failed !== 1 ? "s" : ""} failed. Let the triage agent classify each failure and propose fixes.
+                  </span>
+                  <button
+                    onClick={() => handleTriage(runResult.execution_results)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium rounded-lg transition-colors whitespace-nowrap"
+                  >
+                    <Play className="w-3 h-3" /> Triage Failures
+                  </button>
+                </div>
+              )}
+              {triaging && (
+                <div className="flex items-center gap-2 px-4 py-3 bg-amber-50 text-xs text-amber-700">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Analysing failures…
+                </div>
+              )}
+              {triageError && (
+                <div className="px-4 py-2.5 bg-red-50 text-xs text-red-600 border-t border-red-200">
+                  <AlertCircle className="w-3.5 h-3.5 inline mr-1" /> {triageError}
+                </div>
+              )}
+              {triage && (
+                <TriageGate
+                  triage={triage}
+                  applying={applying}
+                  fixResult={fixResult}
+                  onApplyFixes={handleApplyFixes}
+                  onRerun={() => onRun(headless)}
+                />
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -795,10 +1113,10 @@ function SavedSuitesPanel({ onClose }: { onClose: () => void }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const handleRun = async (suite: TestSuite) => {
+  const handleRun = async (suite: TestSuite, headless: boolean) => {
     setRunning(suite.id);
     try {
-      const result = await rerunTestSuite(suite.id);
+      const result = await rerunTestSuite(suite.id, headless);
       setResults(prev => ({ ...prev, [suite.id]: result }));
       setSuites(prev => prev.map(s => s.id !== suite.id ? s : {
         ...s,
@@ -864,7 +1182,7 @@ function SavedSuitesPanel({ onClose }: { onClose: () => void }) {
                 <SuiteCard
                   key={suite.id}
                   suite={suite}
-                  onRun={() => handleRun(suite)}
+                  onRun={(headless) => handleRun(suite, headless)}
                   onDelete={() => handleDelete(suite.id)}
                   running={running === suite.id}
                   runResult={results[suite.id] ?? null}

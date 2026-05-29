@@ -22,6 +22,7 @@ from playwright_agent import (
     get_suite_files, delete_suite,
     regenerate_scripts_for_suite, update_suite_scripts,
     generate_suite_only, generate_and_run_suite, rerun_suite, list_suites,
+    triage_failures_agent, apply_test_fix,
 )
 
 app = FastAPI(title="QA Test Cases Generator API")
@@ -329,10 +330,44 @@ async def save_suite_scripts(suite_id: str, request: SuiteUpdateScriptsRequest):
         raise HTTPException(status_code=500, detail=traceback.format_exc())
 
 
+class RunSuiteRequest(BaseModel):
+    headless: bool = True
+
+
 @app.post("/api/test-suites/{suite_id}/run")
-async def run_test_suite(suite_id: str):
+async def run_test_suite(suite_id: str, body: RunSuiteRequest = RunSuiteRequest()):
     try:
-        result = await asyncio.to_thread(rerun_suite, suite_id)
+        result = await asyncio.to_thread(rerun_suite, suite_id, headed=not body.headless)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail=traceback.format_exc())
+
+
+class TriageRequest(BaseModel):
+    execution_results: dict
+
+
+class ApplyFixRequest(BaseModel):
+    fixes: list
+
+
+@app.post("/api/test-suites/{suite_id}/triage")
+async def triage_suite_failures(suite_id: str, body: TriageRequest):
+    try:
+        result = await asyncio.to_thread(triage_failures_agent, suite_id, body.execution_results)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail=traceback.format_exc())
+
+
+@app.post("/api/test-suites/{suite_id}/apply-fix")
+async def apply_suite_fix(suite_id: str, body: ApplyFixRequest):
+    try:
+        result = await asyncio.to_thread(apply_test_fix, suite_id, body.fixes)
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

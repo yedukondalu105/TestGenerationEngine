@@ -267,8 +267,12 @@ export async function getTestSuites(): Promise<TestSuite[]> {
   return data.suites ?? [];
 }
 
-export async function rerunTestSuite(suiteId: string): Promise<RerunResponse> {
-  const res = await fetch(`/api/test-suites/${suiteId}/run`, { method: "POST" });
+export async function rerunTestSuite(suiteId: string, headless: boolean = true): Promise<RerunResponse> {
+  const res = await fetch(`/api/test-suites/${suiteId}/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ headless }),
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || `Rerun failed (${res.status})`);
@@ -299,4 +303,75 @@ export async function downloadZip(data: GenerateResponse): Promise<void> {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+// ─── Failure triage ───────────────────────────────────────────────────────────
+
+export type TriageCategory = "product_defect" | "locator_drift" | "bad_assertion" | "flaky_timeout";
+export type TriageConfidence = "high" | "medium" | "low";
+
+export interface TriageProposedFix {
+  file: "pom" | "test";
+  description: string;
+  old_code: string;
+  new_code: string;
+}
+
+export interface TriageItem {
+  test_name: string;
+  category: TriageCategory;
+  confidence: TriageConfidence;
+  root_cause: string;
+  proposed_fix: TriageProposedFix | null;
+}
+
+export interface TriageResponse {
+  suite_id: string;
+  triage: TriageItem[];
+}
+
+export interface ApplyFixItem {
+  test_name: string;
+  file: "pom" | "test";
+  old_code: string;
+  new_code: string;
+}
+
+export interface ApplyFixResponse {
+  applied: { test_name: string; file: string }[];
+  errors: { test_name: string; error: string }[];
+  page_content: string;
+  test_content: string;
+}
+
+export async function triageFailures(
+  suiteId: string,
+  executionResults: PlaywrightExecutionResults,
+): Promise<TriageResponse> {
+  const res = await fetch(`/api/test-suites/${suiteId}/triage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ execution_results: executionResults }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `Triage failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function applyFix(
+  suiteId: string,
+  fixes: ApplyFixItem[],
+): Promise<ApplyFixResponse> {
+  const res = await fetch(`/api/test-suites/${suiteId}/apply-fix`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fixes }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `Apply fix failed (${res.status})`);
+  }
+  return res.json();
 }
