@@ -868,8 +868,11 @@ For each failed test classify the root cause into EXACTLY one of:
 Rules:
 1. For "product_defect" set proposed_fix to null — NEVER suggest a code fix for an app bug.
 2. For all other categories provide a specific, minimal code change:
-   - old_code must be an EXACT substring of the POM or test file shown above.
-   - new_code must be the corrected replacement.
+   - old_code MUST be copied CHARACTER-FOR-CHARACTER from the POM or test file shown above.
+     Copy the exact lines including their indentation. Do NOT paraphrase or reformat.
+     Before writing old_code, find the line(s) in the file above and copy them exactly.
+   - new_code is the corrected replacement (can differ from old_code in content).
+   - Keep old_code and new_code as SHORT as possible — ideally just the 1-3 lines that change.
 3. If a DOM snapshot is present use it to find a more reliable selector.
 
 Return a JSON object with EXACTLY this structure (no markdown, no prose):
@@ -924,14 +927,69 @@ def _strip_lines(s: str) -> str:
 
 
 def _apply_code_fix(content: str, old_code: str, new_code: str) -> tuple[str, bool]:
-    """Exact match first; fall back to line-normalised match for LLM whitespace drift."""
+    """
+    Three-pass replacement with increasing tolerance for LLM whitespace drift.
+    Pass 1 — exact substring match.
+    Pass 2 — CRLF-normalized + trailing-whitespace-stripped match.
+    Pass 3 — leading-whitespace-stripped line comparison (handles indentation drift);
+             re-indents new_code to match the actual indentation found in the file.
+    """
+    # Pass 1: exact
     if old_code in content:
         return content.replace(old_code, new_code, 1), True
-    # Normalise both sides and retry
+
+    # Pass 2: normalize line endings + trailing spaces
     nc = _strip_lines(content)
     no = _strip_lines(old_code)
     if no in nc:
         return nc.replace(no, _strip_lines(new_code), 1), True
+
+    # Pass 3: strip ALL leading whitespace from each line for comparison,
+    #         then re-indent the replacement using the matched block's actual indent.
+    c_lines = content.replace("\r\n", "\n").split("\n")
+    o_lines = old_code.replace("\r\n", "\n").split("\n")
+
+    # Drop leading/trailing blank lines from the old_code pattern
+    while o_lines and not o_lines[0].strip():
+        o_lines.pop(0)
+    while o_lines and not o_lines[-1].strip():
+        o_lines.pop()
+    if not o_lines:
+        return content, False
+
+    o_stripped = [l.strip() for l in o_lines]
+    n = len(o_stripped)
+
+    for i in range(len(c_lines) - n + 1):
+        block = c_lines[i : i + n]
+        if [l.strip() for l in block] == o_stripped:
+            # Determine base indent from first non-empty line of the matched block
+            first_non_empty = next((l for l in block if l.strip()), block[0])
+            base_indent = len(first_non_empty) - len(first_non_empty.lstrip())
+            indent_str = first_non_empty[:base_indent]  # preserve tabs vs spaces
+
+            # Dedent new_code then re-indent with the matched block's base indent
+            n_lines = new_code.replace("\r\n", "\n").split("\n")
+            while n_lines and not n_lines[0].strip():
+                n_lines.pop(0)
+            while n_lines and not n_lines[-1].strip():
+                n_lines.pop()
+
+            new_base = min(
+                (len(l) - len(l.lstrip()) for l in n_lines if l.strip()),
+                default=0,
+            )
+            indented_new = []
+            for l in n_lines:
+                if not l.strip():
+                    indented_new.append("")
+                else:
+                    rel = len(l) - len(l.lstrip()) - new_base
+                    indented_new.append(indent_str + " " * max(0, rel) + l.lstrip())
+
+            result = c_lines[:i] + indented_new + c_lines[i + n :]
+            return "\n".join(result), True
+
     return content, False
 
 
