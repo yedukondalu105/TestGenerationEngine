@@ -6,6 +6,7 @@ import uuid
 import tempfile
 import subprocess
 import datetime
+import difflib
 from pathlib import Path
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -848,13 +849,13 @@ def triage_failures_agent(suite_id: str, execution_results: dict) -> dict:
 Suite: {suite['use_case']}
 
 === POM FILE ({suite['page_file']}) ===
-{pom_content[:4000]}
+{pom_content[:12000]}
 
 === TEST FILE ({suite['test_file']}) ===
-{test_content[:4000]}
+{test_content[:12000]}
 
 === FEATURE FILE ===
-{feature_content[:2000]}
+{feature_content[:4000]}
 
 === FAILED TESTS (with DOM snapshots where available) ===
 {json.dumps(failures_detail, indent=2)}
@@ -918,12 +919,96 @@ Return a JSON object with EXACTLY this structure (no markdown, no prose):
             ]
         }
 
-    return {"suite_id": suite_id, "triage": parsed.get("triage", [])}
+    triage_list = parsed.get("triage", [])
+    triage_list = _validate_triage_fixes(triage_list, pom_content, test_content)
+    return {"suite_id": suite_id, "triage": triage_list}
 
 
 def _strip_lines(s: str) -> str:
     """Normalize CRLF → LF and strip trailing whitespace per line."""
     return "\n".join(line.rstrip() for line in s.replace("\r\n", "\n").split("\n"))
+
+
+def _old_code_exists(content: str, old_code: str) -> bool:
+    """Check whether old_code can be located using the same 3-pass logic as _apply_code_fix."""
+    if old_code in content:
+        return True
+    if _strip_lines(old_code) in _strip_lines(content):
+        return True
+    c_lines = content.replace("\r\n", "\n").split("\n")
+    o_lines = old_code.replace("\r\n", "\n").split("\n")
+    while o_lines and not o_lines[0].strip():
+        o_lines.pop(0)
+    while o_lines and not o_lines[-1].strip():
+        o_lines.pop()
+    if not o_lines:
+        return False
+    o_stripped = [l.strip() for l in o_lines]
+    n = len(o_stripped)
+    for i in range(len(c_lines) - n + 1):
+        if [l.strip() for l in c_lines[i : i + n]] == o_stripped:
+            return True
+    return False
+
+
+def _find_actual_block(content: str, llm_old_code: str, threshold: float = 0.75) -> str | None:
+    """Fuzzy-find the block in content most similar to llm_old_code; return actual file text or None."""
+    c_lines = content.replace("\r\n", "\n").split("\n")
+    o_lines = llm_old_code.replace("\r\n", "\n").split("\n")
+    while o_lines and not o_lines[0].strip():
+        o_lines.pop(0)
+    while o_lines and not o_lines[-1].strip():
+        o_lines.pop()
+    if not o_lines:
+        return None
+    n = len(o_lines)
+    o_key = "\n".join(l.strip() for l in o_lines)
+    best_ratio = 0.0
+    best_start = -1
+    for i in range(max(1, len(c_lines) - n + 1)):
+        block = c_lines[i : i + n]
+        b_key = "\n".join(l.strip() for l in block)
+        ratio = difflib.SequenceMatcher(None, o_key, b_key).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_start = i
+    if best_ratio >= threshold and best_start >= 0:
+        return "\n".join(c_lines[best_start : best_start + n])
+    return None
+
+
+def _validate_triage_fixes(triage_items: list, pom_content: str, test_content: str) -> list:
+    """
+    Post-triage validation: verify each proposed_fix.old_code exists in the target file.
+    If not found, attempt fuzzy correction. If still not found, nullify the fix with a note.
+    """
+    result = []
+    for item in triage_items:
+        fix = item.get("proposed_fix")
+        if not fix or not fix.get("old_code") or not fix.get("new_code"):
+            result.append(item)
+            continue
+        old_code = fix["old_code"]
+        file_target = fix.get("file", "pom")
+        content = pom_content if file_target == "pom" else test_content
+        if _old_code_exists(content, old_code):
+            result.append(item)
+            continue
+        actual = _find_actual_block(content, old_code)
+        if actual is not None:
+            item = dict(item)
+            item["proposed_fix"] = dict(fix)
+            item["proposed_fix"]["old_code"] = actual
+            result.append(item)
+        else:
+            item = dict(item)
+            item["proposed_fix"] = None
+            item["root_cause"] = (
+                item.get("root_cause", "")
+                + " [Auto-fix unavailable — apply the suggested change manually using the diff.]"
+            )
+            result.append(item)
+    return result
 
 
 def _apply_code_fix(content: str, old_code: str, new_code: str) -> tuple[str, bool]:
