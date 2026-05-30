@@ -459,11 +459,13 @@ Gate 3 closes the loop from test failures back into the agent layer. Previously 
 
 ```python
 def triage_failures_agent(suite_id: str, execution_results: dict) -> dict:
-    # 1. Load POM, test, and feature files for the suite
+    # 1. Load POM (up to 12,000 chars), test (up to 12,000 chars), feature (up to 4,000 chars)
     # 2. For each failed test, check tests/failure_artifacts/{test_name}.html for DOM snapshot
     # 3. Call gpt-4o with full context: POM + test + feature + error message + DOM snapshot
     # 4. LLM classifies each failure and proposes old_code → new_code patch
-    # 5. Returns {"suite_id": ..., "triage": [TriageItem, ...]}
+    # 5. Post-process: _validate_triage_fixes() verifies each proposed_fix.old_code exists,
+    #    fuzzy-corrects if close, or nullifies the fix with a manual-apply note if not found
+    # 6. Returns {"suite_id": ..., "triage": [TriageItem, ...]}
 ```
 
 **LLM**: `gpt-4o` (higher reasoning needed vs `gpt-4o-mini` for review).
@@ -492,15 +494,42 @@ def apply_test_fix(suite_id: str, fixes: list) -> dict:
     # Write changed files back to disk
     # Returns { applied: [{test_name, file}], errors: [{test_name, error}],
     #           page_content, test_content }
+    #
+    # Note: by the time fixes reach this function, old_code has already been validated
+    # and fuzzy-corrected by _validate_triage_fixes() during triage. Apply-Fix failures
+    # here are therefore rare and indicate the file was modified between triage and apply.
 ```
 
 ### Triage Prompt Engineering
 
-The `triage_failures_agent` prompt enforces verbatim `old_code` copying:
+**Context window**: The prompt now includes up to **12,000 chars** of the POM file, **12,000 chars** of the test file, and **4,000 chars** of the feature file (previously 4,000 / 4,000 / 2,000). This ensures the LLM sees the full file in all but the very largest suites, eliminating the most common cause of `old_code` hallucination — code beyond position 4,000 that the LLM had never seen.
+
+The prompt enforces verbatim `old_code` copying:
 - *"old_code MUST be copied CHARACTER-FOR-CHARACTER from the POM or test file shown above — including indentation."*
 - *"Keep old_code and new_code as SHORT as possible — ideally just the 1-3 lines that change."*
 
-This reduces the surface area where indentation drift or content paraphrasing can cause match failures. The 3-pass backend matching handles any remaining drift.
+### Post-Triage Validation Pipeline
+
+After the LLM returns triage JSON, `_validate_triage_fixes()` runs a second pass over every `proposed_fix` before the response is returned to the frontend. This eliminates the "old_code not found" error by catching hallucinated or drifted `old_code` server-side:
+
+```
+For each TriageItem with a proposed_fix:
+  1. _old_code_exists(content, old_code)   — 3-pass check (exact / normalized / stripped-indent)
+     → match found: keep item as-is
+     → no match: escalate to fuzzy search
+  2. _find_actual_block(content, old_code) — difflib.SequenceMatcher sliding-window search
+     → ratio ≥ 0.75: replace proposed_fix.old_code with the actual file block
+     → ratio < 0.75: nullify proposed_fix, append "apply manually" note to root_cause
+```
+
+**`_old_code_exists(content, old_code) -> bool`**  
+Same three passes as `_apply_code_fix`: exact substring → CRLF/trailing-whitespace normalized → strip-all-leading-whitespace line comparison. Returns `True` if any pass succeeds.
+
+**`_find_actual_block(content, llm_old_code, threshold=0.75) -> str | None`**  
+Slides a window of `len(o_lines)` lines across `content`, computing `difflib.SequenceMatcher.ratio()` on leading-whitespace-stripped line keys. Returns the actual file lines for the highest-scoring window if `ratio ≥ 0.75`, else `None`. This handles minor indent drift, renamed variables, or slight reformatting by the LLM.
+
+**`_validate_triage_fixes(triage_items, pom_content, test_content) -> list`**  
+Orchestrates the above two functions for every item in the triage list. Safe to call even when `proposed_fix` is `null` or missing fields (skips those unchanged).
 
 ### Gate 3 UI — `TriageGate` Component
 
@@ -786,7 +815,9 @@ TestCasesGenerator/
 │   │                                #   regenerate_scripts, get_suite_files, delete_suite
 │   │                                #   rerun_suite(headed), triage_failures_agent,
 │   │                                #   apply_test_fix (_apply_code_fix 3-pass matching),
-│   │                                #   run_single_test (per-test rerun)          ← NEW
+│   │                                #   run_single_test (per-test rerun),
+│   │                                #   _old_code_exists, _find_actual_block (difflib fuzzy),
+│   │                                #   _validate_triage_fixes (post-triage old_code guard)
 │   ├── excel_generator.py           # .xlsx export
 │   ├── zip_generator.py             # .zip bundle export
 │   └── prompts/                     # Prompt .txt files for each agent
@@ -871,6 +902,7 @@ pydantic             ← request/response models
 pytest               ← test runner
 pytest-playwright    ← Playwright fixtures (headless Chromium)
 pytest-json-report   ← structured JSON result output
+difflib              ← stdlib; fuzzy block matching for triage old_code validation
 
 # Exports
 openpyxl             ← Excel generation
