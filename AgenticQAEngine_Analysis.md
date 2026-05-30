@@ -12,13 +12,14 @@ The system targets a **Trade Processing Platform** domain (trade creation, appro
 ① Generate Scenarios     ② Review Scenarios     ③ Review & Save Tests    ④ Run Tests + Triage
   Gherkin BDD via RAG  →  Gate 1: approve,     →  Gate 2: edit/         →  Saved Test Suites
   (chat prompt → AI)       feedback, upload JSON    re-gen scripts, save     Gate 3: triage failures,
-                                                                             apply fixes, re-run
+                                                                             apply fixes, per-test
+                                                                             re-run, iterative retriage
 ```
 
 Human checkpoints allow reviewers to:
 - **Gate 1 (Scenario Review)**: inspect Gherkin scenarios by type, provide feedback to re-generate the full pipeline, or upload a modified JSON file before any code is generated
 - **Gate 2 (Script Review)**: read and directly edit the generated Feature file, Page Object, and Test Code; provide feedback to re-generate only the scripts (feature file preserved); approve to persist the suite to disk
-- **Gate 3 (Failure Triage)**: after a run with failures, the triage agent classifies each failure (Product Defect / Locator Drift / Bad Assertion / Flaky/Timeout), proposes a minimal code fix, and lets the human choose per failure: Apply Fix immediately, Skip, or Mark as Bug — then re-run to verify
+- **Gate 3 (Failure Triage)**: after a run with failures, the triage agent classifies each failure (Product Defect / Locator Drift / Bad Assertion / Flaky/Timeout), proposes a minimal code fix; human can Apply Fix immediately per row, Skip, or Mark as Bug; after applying, re-run the individual test to verify; if still failing, AI re-triages and proposes a new fix or flags for human review
 
 ---
 
@@ -47,8 +48,9 @@ Human checkpoints allow reviewers to:
 │    /api/test-suites/[id]/run       → POST /api/test-suites/{id}/run      │
 │    /api/test-suites/[id]/files     → GET  /api/test-suites/{id}/files    │
 │    /api/test-suites/[id]           → DELETE /api/test-suites/{id}        │
-│    /api/test-suites/[id]/triage    → POST /api/test-suites/{id}/triage   │ ← NEW
-│    /api/test-suites/[id]/apply-fix → POST /api/test-suites/{id}/apply-fix│ ← NEW
+│    /api/test-suites/[id]/triage    → POST /api/test-suites/{id}/triage   │
+│    /api/test-suites/[id]/apply-fix → POST /api/test-suites/{id}/apply-fix│
+│    /api/test-suites/[id]/run-test  → POST /api/test-suites/{id}/run-test │ ← NEW
 │    /api/download                   → POST /api/download                  │
 │    /api/download-zip               → POST /api/download-zip              │
 └──────────────────────────────┬───────────────────────────────────────────┘
@@ -71,8 +73,9 @@ Human checkpoints allow reviewers to:
 │  • GET  /api/test-suites/{id}/files  — read feature/POM/test contents    │
 │  • POST /api/test-suites/{id}/run    — re-run a saved suite              │
 │  • DELETE /api/test-suites/{id}      — delete suite files + manifest     │
-│  • POST /api/test-suites/{id}/triage — triage failed tests via LLM       │ ← NEW
-│  • POST /api/test-suites/{id}/apply-fix — patch POM/test file on disk    │ ← NEW
+│  • POST /api/test-suites/{id}/triage    — triage failed tests via LLM    │
+│  • POST /api/test-suites/{id}/apply-fix — patch POM/test file on disk    │
+│  • POST /api/test-suites/{id}/run-test  — run a single named test        │ ← NEW
 │                                                                          │
 │  Export                                                                  │
 │  • POST /api/download              — streams Excel file                  │
@@ -89,6 +92,7 @@ Human checkpoints allow reviewers to:
          │                        │  • rerun_suite(headed) — pytest       │
          │                        │  • triage_failures_agent() — Gate 3   │
          │                        │  • apply_test_fix() — patch on disk   │
+         │                        │  • run_single_test() — per-test rerun │ ← NEW
 ┌────────▼──────────────────────────────────────────────────────────────────┐
 │  Knowledge Layer                                                          │
 │  Neo4j Graph DB ──► RequirementGraphEngine (Graph RAG)                    │
@@ -258,9 +262,19 @@ This allows targeted improvements (e.g. "add more edge cases for empty fields") 
 - Returns `{ suite_id, triage: TriageItem[] }`
 
 **`apply_test_fix(suite_id, fixes)`** — apply LLM-proposed patches:
-- For each fix: finds `old_code` in POM or test file (exact string match), replaces with `new_code`
-- Writes patched files back to disk; reports errors for any `old_code` not found
+- Uses `_apply_code_fix()` which attempts replacement in three passes:
+  - Pass 1 (exact): `old_code in content`
+  - Pass 2 (normalized): CRLF→LF + strip trailing whitespace per line, then substring match
+  - Pass 3 (indentation-tolerant): strip all leading whitespace from each line for comparison, then re-indent `new_code` using the matched block's actual base indent from the file
+- Writes patched files back to disk; reports errors for any `old_code` not found in any pass
 - Returns `{ applied, errors, page_content, test_content }`
+
+**`run_single_test(suite_id, test_name, headed=False)`** — run one named test in isolation:
+- Looks up manifest to find the test file for the suite
+- Extracts the test class name via `re.search(r'^class\s+(\w+)', content, re.MULTILINE)`
+- Constructs a pytest node ID as a plain string: `"{test_file}::{ClassName}::{test_name}"` (not a `Path` object — Windows rejects `::` in path objects)
+- Runs pytest with `--json-report` and 5-minute timeout
+- Returns the same `PlaywrightExecutionResults` structure as a full suite run
 
 ### LLM Instances
 
@@ -474,45 +488,92 @@ interface TriageItem {
 
 ```python
 def apply_test_fix(suite_id: str, fixes: list) -> dict:
-    # For each fix: locate old_code in POM or test file, replace with new_code (first occurrence)
+    # For each fix: call _apply_code_fix(content, old_code, new_code) — 3-pass matching
     # Write changed files back to disk
     # Returns { applied: [{test_name, file}], errors: [{test_name, error}],
     #           page_content, test_content }
 ```
 
-Uses exact-string replacement (`str.replace(old_code, new_code, 1)`) — if `old_code` is not found the fix is reported in `errors` without crashing.
+### Triage Prompt Engineering
+
+The `triage_failures_agent` prompt enforces verbatim `old_code` copying:
+- *"old_code MUST be copied CHARACTER-FOR-CHARACTER from the POM or test file shown above — including indentation."*
+- *"Keep old_code and new_code as SHORT as possible — ideally just the 1-3 lines that change."*
+
+This reduces the surface area where indentation drift or content paraphrasing can cause match failures. The 3-pass backend matching handles any remaining drift.
 
 ### Gate 3 UI — `TriageGate` Component
 
 Appears below `PlaywrightResultsPanel` in `SuiteCard` only when `execution_results.failed > 0`.
 
-**Flow:**
+**Full flow — per test failure:**
 
 ```
 Run suite → failures → amber banner: "X tests failed. Triage Failures →"
   ↓ click Triage Failures
-  Calls POST /api/test-suites/{id}/triage  (~10-20s LLM call)
+  POST /api/test-suites/{id}/triage  (~10-20s LLM call)
   ↓
-TriageGate opens, shows per-failure row:
+TriageGate shows per-failure card:
   [✗ test_name]  [Category badge]  [confidence]
   Root cause explanation
-  ► "Fix description" (click to expand old/new code diff)
-  [Apply Fix ▶]  [Skip]  [Bug]
+  ► collapsible old_code / new_code diff
+  [Apply Fix] (full-width violet button, not shown for product_defect)
+  [Skip]  [Bug]  (dismiss without backend call)
 
-  "Apply Fix" → immediately calls POST /api/test-suites/{id}/apply-fix
-               → row turns green ✓, "fix applied" tag appears
-  "Skip" / "Bug" → visual marker only, no backend call
+  ─── Click "Apply Fix" ───────────────────────────────────────────────────────
+  Button immediately shows "Applying fix to [pom|test] file…" (violet banner + spinner)
+  POST /api/test-suites/{id}/apply-fix
+    ├── Success (applied):
+    │   Full-width green banner: "Fix applied to [file] — [description] — re-run to confirm"
+    │   Full-width blue button: [Re-run This Test]
+    │
+    └── Error (old_code not found even after 3-pass match):
+        Full-width red box: "Could not apply fix — [reason] — apply the diff manually"
 
-Bottom bar:
-  [✓ N fixes applied]  [Re-run Suite]  [Apply All (N)]  ← "Apply All" only if 2+ pending
+  ─── Click "Re-run This Test" ────────────────────────────────────────────────
+  POST /api/test-suites/{id}/run-test  (single-test pytest, ≤5 min timeout)
+    ├── PASS → full-width green: "Test is now passing — fix confirmed ✓"
+    │
+    └── FAIL → full-width red: "Test is still failing" + error message
+               AUTO-TRIGGERS: POST /api/test-suites/{id}/triage (single-test results)
+               ↓
+               New AI analysis panel (amber box):
+                 ├── Has proposed_fix → new diff + full-width [Apply New Fix]
+                 └── No fix possible  → "⚠ Requires human review — agent cannot auto-fix"
+
+Bottom action bar:
+  [✓ N fixes applied]  [Re-run Suite]  [Apply All (N)]
+  "Apply All" only shown when 2+ rows have pending fixes
 ```
 
+**State architecture (`TriageGate` owns all apply/rerun state locally):**
+
+```typescript
+// Apply state — per-row, immediate feedback without parent re-render
+const [applyingSet, setApplyingSet]   = useState<Set<string>>(new Set());
+const [appliedNames, setAppliedNames] = useState<Set<string>>(new Set());
+const [errorMap, setErrorMap]         = useState<Record<string, string>>({});
+
+// Per-test re-run state
+const [rerunning, setRerunning]       = useState<string | null>(null);
+const [rerunResults, setRerunResults] = useState<Record<string, PlaywrightTestResult>>({});
+
+// Per-test re-triage state (after re-run still fails)
+const [retriaging, setRetriaging]         = useState<string | null>(null);
+const [retriageItems, setRetriageItems]   = useState<Record<string, TriageItem>>({});
+const [retriageErrors, setRetriageErrors] = useState<Record<string, string>>({});
+const [reapplied, setReapplied]           = useState<Set<string>>(new Set());
+```
+
+`onApplyFixes` is typed `(fixes) => Promise<ApplyFixResponse>` so `TriageGate` processes results directly without waiting for prop re-renders from the parent. The button spinner activates immediately on click via `applyingSet`, independent of any parent state cycle.
+
 **Key design decisions:**
-- "Apply Fix" executes **immediately** per row — no separate confirm step needed
-- Applied rows accumulate in local `appliedNames: Set<string>` via `useEffect` on `fixResult` — survives multiple sequential apply calls
+- All visual state (loading, applied, error, rerun, retriage) is owned by `TriageGate` — no prop-based feedback loop
+- Every state transition uses **full-width banners** — impossible to miss (vs. previous tiny inline badges)
 - `product_defect` rows never show "Apply Fix" — only "Bug" and "Skip"
-- "Re-run Suite" appears as soon as any fix is applied
-- "Apply All (N)" appears only when 2+ pending fixes remain (single-failure suites get just per-row apply)
+- Re-run targets the exact single test via pytest node ID — does not re-run the whole suite
+- Auto-retriage after re-run fail constructs a minimal `PlaywrightExecutionResults` with just the one test and passes it to the existing triage endpoint
+- "Re-run Suite" (full suite) always available in the action bar once any fix is applied
 
 ---
 
@@ -578,10 +639,13 @@ ChatInterface (main)
         │   ├── File viewer tabs: Feature | Page Object | Test Code (read-only)
         │   └── SuiteScriptEditor (edit mode): editable textareas + re-gen + save
         ├── Inline run results (PlaywrightResultsPanel after re-run)
-        └── TriageGate (Gate 3 — only when failed > 0)            ← NEW
-            ├── Per-failure rows: category badge, confidence, root cause, fix diff
-            ├── Per-row actions: Apply Fix (immediate) / Skip / Bug
-            └── Action bar: applied count, Re-run Suite, Apply All
+        └── TriageGate (Gate 3 — only when failed > 0)
+            ├── Per-failure cards: category badge, confidence, root cause, collapsible diff
+            ├── Per-row actions: Apply Fix (full-width) / Skip / Bug
+            ├── Post-apply: "Fix applied" banner + "Re-run This Test" full-width button
+            ├── Re-run result: "Passing ✓" OR "Still failing" + auto-retriage analysis
+            ├── Re-triage result: new diff + Apply New Fix OR "Requires human review"
+            └── Action bar: applied count, Re-run Suite, Apply All (N)
 ```
 
 ### Key UI Behaviours
@@ -623,6 +687,7 @@ ChatInterface (main)
 | `deleteSuite(id)` | DELETE `/api/test-suites/{id}` | Delete suite files + manifest entry |
 | `triageFailures(id, executionResults)` | POST `/api/test-suites/{id}/triage` | Gate 3: classify failures via LLM |
 | `applyFix(id, fixes)` | POST `/api/test-suites/{id}/apply-fix` | Patch POM or test file on disk |
+| `runSingleTest(id, testName, headless)` | POST `/api/test-suites/{id}/run-test` | Run one named test, return results |
 | `downloadExcel()` | POST `/api/download` | Stream `.xlsx` download |
 | `downloadZip()` | POST `/api/download-zip` | Stream `.zip` bundle |
 
@@ -633,6 +698,7 @@ interface TriageItem { test_name, category, confidence, root_cause, proposed_fix
 interface TriageResponse { suite_id, triage: TriageItem[] }
 interface ApplyFixItem  { test_name, file: "pom"|"test", old_code, new_code }
 interface ApplyFixResponse { applied, errors, page_content, test_content }
+// runSingleTest returns PlaywrightExecutionResults (same shape as full suite run)
 ```
 
 ### Node v24 + Next.js 14 — Dynamic Route Constraint
@@ -719,7 +785,8 @@ TestCasesGenerator/
 │   │                                #   generate_suite_preview, save_approved_suite,
 │   │                                #   regenerate_scripts, get_suite_files, delete_suite
 │   │                                #   rerun_suite(headed), triage_failures_agent,
-│   │                                #   apply_test_fix
+│   │                                #   apply_test_fix (_apply_code_fix 3-pass matching),
+│   │                                #   run_single_test (per-test rerun)          ← NEW
 │   ├── excel_generator.py           # .xlsx export
 │   ├── zip_generator.py             # .zip bundle export
 │   └── prompts/                     # Prompt .txt files for each agent
@@ -741,8 +808,9 @@ TestCasesGenerator/
 │   │               ├── route.ts              # DELETE suite
 │   │               ├── run/route.ts          # POST run (headless|headed)
 │   │               ├── files/route.ts        # GET file contents
-│   │               ├── triage/route.ts       # POST triage failures     ← NEW
-│   │               ├── apply-fix/route.ts    # POST apply code patch    ← NEW
+│   │               ├── triage/route.ts       # POST triage failures
+│   │               ├── apply-fix/route.ts    # POST apply code patch
+│   │               ├── run-test/route.ts     # POST run single test     ← NEW
 │   │               ├── scripts/route.ts      # PUT update scripts
 │   │               └── regenerate-scripts/route.ts
 │   ├── components/
