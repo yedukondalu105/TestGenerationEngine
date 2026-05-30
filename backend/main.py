@@ -22,7 +22,7 @@ from playwright_agent import (
     get_suite_files, delete_suite,
     regenerate_scripts_for_suite, update_suite_scripts,
     generate_suite_only, generate_and_run_suite, rerun_suite, list_suites,
-    triage_failures_agent, apply_test_fix,
+    triage_failures_agent, apply_test_fix, run_single_test,
 )
 
 app = FastAPI(title="QA Test Cases Generator API")
@@ -368,6 +368,22 @@ async def triage_suite_failures(suite_id: str, body: TriageRequest):
 async def apply_suite_fix(suite_id: str, body: ApplyFixRequest):
     try:
         result = await asyncio.to_thread(apply_test_fix, suite_id, body.fixes)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail=traceback.format_exc())
+
+
+class RunSingleTestRequest(BaseModel):
+    test_name: str
+    headless: bool = True
+
+
+@app.post("/api/test-suites/{suite_id}/run-test")
+async def run_single_test_endpoint(suite_id: str, body: RunSingleTestRequest):
+    try:
+        result = await asyncio.to_thread(run_single_test, suite_id, body.test_name, headed=not body.headless)
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

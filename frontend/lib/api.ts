@@ -360,6 +360,23 @@ export async function triageFailures(
   return res.json();
 }
 
+export async function runSingleTest(
+  suiteId: string,
+  testName: string,
+  headless: boolean = true,
+): Promise<PlaywrightExecutionResults> {
+  const res = await fetch(`/api/test-suites/${suiteId}/run-test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ test_name: testName, headless }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `Single test run failed (${res.status})`);
+  }
+  return res.json();
+}
+
 export async function applyFix(
   suiteId: string,
   fixes: ApplyFixItem[],

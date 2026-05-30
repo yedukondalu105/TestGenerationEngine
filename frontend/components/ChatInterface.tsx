@@ -12,11 +12,11 @@ import {
   generatePlaywrightTests, saveSuite, regenerateScenarios, regenerateScripts,
   getTestSuites, rerunTestSuite, getSuiteFiles, deleteSuite,
   regenerateSuiteScripts, updateSuiteScripts,
-  triageFailures, applyFix,
+  triageFailures, applyFix, runSingleTest,
   GenerateResponse, SuitePreviewResponse,
   PlaywrightResponse, RerunResponse, TestSuite, SuiteFilesResponse,
   TriageItem, TriageResponse, ApplyFixItem, ApplyFixResponse,
-  PlaywrightExecutionResults,
+  PlaywrightExecutionResults, PlaywrightTestResult,
 } from "@/lib/api";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -597,77 +597,222 @@ const CONFIDENCE_COLOR: Record<string, string> = {
   low:    "text-gray-400",
 };
 
-type TriageDecision = "apply" | "skip" | "bug";
+function FixDiff({ fix }: { fix: { description: string; old_code: string; new_code: string } }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-1.5">
+      <button
+        onClick={() => setOpen(p => !p)}
+        className="text-xs text-violet-600 hover:text-violet-800 flex items-center gap-1"
+      >
+        <ChevronRight className={`w-3 h-3 transition-transform ${open ? "rotate-90" : ""}`} />
+        {fix.description}
+      </button>
+      {open && (
+        <div className="mt-2 rounded-lg border border-gray-200 overflow-hidden text-xs">
+          <div className="px-2 py-1 bg-red-50 border-b border-gray-200">
+            <span className="font-semibold text-red-600 mr-1">−</span>
+            <code className="text-red-700 whitespace-pre-wrap break-all">{fix.old_code}</code>
+          </div>
+          <div className="px-2 py-1 bg-green-50">
+            <span className="font-semibold text-green-600 mr-1">+</span>
+            <code className="text-green-700 whitespace-pre-wrap break-all">{fix.new_code}</code>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function TriageGate({
   triage,
-  applying,
-  fixResult,
+  suiteId,
+  headless,
   onApplyFixes,
   onRerun,
 }: {
   triage: TriageResponse;
-  applying: boolean;
-  fixResult: ApplyFixResponse | null;
-  onApplyFixes: (fixes: ApplyFixItem[]) => void;
+  suiteId: string;
+  headless: boolean;
+  onApplyFixes: (fixes: ApplyFixItem[]) => Promise<ApplyFixResponse>;
   onRerun: () => void;
 }) {
-  // Track which tests have been dismissed (skip/bug) — does not affect execution
-  const [dismissed, setDismissed] = useState<Record<string, "skip" | "bug">>({});
-  const [expanded, setExpanded]   = useState<Record<string, boolean>>({});
-
-  // Accumulate applied/errored test names across multiple apply calls
+  const [dismissed, setDismissed]       = useState<Record<string, "skip" | "bug">>({});
+  // Per-row apply state — owned entirely by TriageGate for immediate feedback
+  const [applyingSet, setApplyingSet]   = useState<Set<string>>(new Set());
   const [appliedNames, setAppliedNames] = useState<Set<string>>(new Set());
   const [errorMap, setErrorMap]         = useState<Record<string, string>>({});
 
-  useEffect(() => {
-    if (!fixResult) return;
+  // Per-test re-run state
+  const [rerunning, setRerunning]       = useState<string | null>(null);
+  const [rerunResults, setRerunResults] = useState<Record<string, PlaywrightTestResult>>({});
+
+  // Per-test re-triage state (after a re-run still fails)
+  const [retriaging, setRetriaging]         = useState<string | null>(null);
+  const [retriageItems, setRetriageItems]   = useState<Record<string, TriageItem>>({});
+  const [retriageErrors, setRetriageErrors] = useState<Record<string, string>>({});
+  const [reapplied, setReapplied]           = useState<Set<string>>(new Set());
+
+  const markApplying = (names: string[]) =>
+    setApplyingSet(prev => new Set([...Array.from(prev), ...names]));
+  const unmarkApplying = (names: string[]) =>
+    setApplyingSet(prev => { const n = new Set(Array.from(prev)); names.forEach(x => n.delete(x)); return n; });
+
+  const processFixResult = (result: ApplyFixResponse) => {
     setAppliedNames(prev => {
-      const next = new Set(prev);
-      fixResult.applied.forEach(a => next.add(a.test_name));
+      const next = new Set(Array.from(prev));
+      result.applied.forEach(a => next.add(a.test_name));
       return next;
     });
     setErrorMap(prev => {
       const next = { ...prev };
-      fixResult.errors.forEach(e => { next[e.test_name] = e.error; });
+      result.errors.forEach(e => { next[e.test_name] = e.error; });
       return next;
     });
-  }, [fixResult]);
-
-  const toggleExpanded = (name: string) =>
-    setExpanded(prev => ({ ...prev, [name]: !prev[name] }));
-
-  const applyOne = (item: TriageItem) => {
-    if (!item.proposed_fix || applying || appliedNames.has(item.test_name)) return;
-    onApplyFixes([{
-      test_name: item.test_name,
-      file:      item.proposed_fix.file,
-      old_code:  item.proposed_fix.old_code,
-      new_code:  item.proposed_fix.new_code,
-    }]);
   };
 
-  const applyAll = () => {
-    const fixes: ApplyFixItem[] = triage.triage
-      .filter(item =>
-        item.proposed_fix &&
-        !appliedNames.has(item.test_name) &&
-        !dismissed[item.test_name] &&
-        item.category !== "product_defect",
-      )
-      .map(item => ({
+  const applyOne = async (item: TriageItem) => {
+    if (!item.proposed_fix || applyingSet.has(item.test_name) || appliedNames.has(item.test_name)) return;
+    markApplying([item.test_name]);
+    try {
+      const result = await onApplyFixes([{
+        test_name: item.test_name,
+        file:      item.proposed_fix.file,
+        old_code:  item.proposed_fix.old_code,
+        new_code:  item.proposed_fix.new_code,
+      }]);
+      processFixResult(result);
+    } catch (e: unknown) {
+      setErrorMap(prev => ({
+        ...prev,
+        [item.test_name]: e instanceof Error ? e.message : "Apply failed",
+      }));
+    } finally {
+      unmarkApplying([item.test_name]);
+    }
+  };
+
+  const applyAll = async () => {
+    const pending = triage.triage.filter(item =>
+      item.proposed_fix &&
+      !appliedNames.has(item.test_name) &&
+      !applyingSet.has(item.test_name) &&
+      !dismissed[item.test_name] &&
+      item.category !== "product_defect",
+    );
+    if (pending.length === 0) return;
+    const names = pending.map(i => i.test_name);
+    markApplying(names);
+    try {
+      const result = await onApplyFixes(pending.map(item => ({
         test_name: item.test_name,
         file:      item.proposed_fix!.file,
         old_code:  item.proposed_fix!.old_code,
         new_code:  item.proposed_fix!.new_code,
+      })));
+      processFixResult(result);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Apply failed";
+      setErrorMap(prev => {
+        const next = { ...prev };
+        names.forEach(n => { next[n] = msg; });
+        return next;
+      });
+    } finally {
+      unmarkApplying(names);
+    }
+  };
+
+  const handleRerun = async (testName: string) => {
+    setRerunning(testName);
+    setRerunResults(prev => {
+      const next = { ...prev };
+      delete next[testName];
+      return next;
+    });
+    setRetriageItems(prev => {
+      const next = { ...prev };
+      delete next[testName];
+      return next;
+    });
+    setRetriageErrors(prev => {
+      const next = { ...prev };
+      delete next[testName];
+      return next;
+    });
+    try {
+      const result = await runSingleTest(suiteId, testName, headless);
+      const testResult = result.tests[0] ?? {
+        name: testName, outcome: result.execution_error ? "error" : "failed",
+        duration: 0, message: result.execution_error ?? "",
+      };
+      setRerunResults(prev => ({ ...prev, [testName]: testResult }));
+
+      // Auto-triage if still failing
+      if (testResult.outcome !== "passed") {
+        setRetriaging(testName);
+        try {
+          const miniResults = {
+            passed: 0, failed: 1, error: 0, total: 1,
+            tests: [testResult],
+            raw_output: result.raw_output,
+            execution_error: result.execution_error,
+          };
+          const retriageResult = await triageFailures(suiteId, miniResults);
+          const newItem = retriageResult.triage[0] ?? null;
+          if (newItem) {
+            setRetriageItems(prev => ({ ...prev, [testName]: newItem }));
+          } else {
+            setRetriageErrors(prev => ({ ...prev, [testName]: "Re-triage returned no results." }));
+          }
+        } catch (e: unknown) {
+          setRetriageErrors(prev => ({
+            ...prev,
+            [testName]: e instanceof Error ? e.message : "Re-triage failed",
+          }));
+        } finally {
+          setRetriaging(null);
+        }
+      }
+    } catch (e: unknown) {
+      setRerunResults(prev => ({
+        ...prev,
+        [testName]: {
+          name: testName, outcome: "error",
+          duration: 0, message: e instanceof Error ? e.message : "Re-run failed",
+        },
       }));
-    if (fixes.length > 0) onApplyFixes(fixes);
+    } finally {
+      setRerunning(null);
+    }
+  };
+
+  const handleApplyRetriage = async (testName: string, item: TriageItem) => {
+    if (!item.proposed_fix || applyingSet.has(testName)) return;
+    markApplying([testName]);
+    try {
+      await onApplyFixes([{
+        test_name: testName,
+        file:      item.proposed_fix.file,
+        old_code:  item.proposed_fix.old_code,
+        new_code:  item.proposed_fix.new_code,
+      }]);
+      setReapplied(prev => new Set([...Array.from(prev), testName]));
+    } catch (e: unknown) {
+      setErrorMap(prev => ({
+        ...prev,
+        [testName]: e instanceof Error ? e.message : "Apply failed",
+      }));
+    } finally {
+      unmarkApplying([testName]);
+    }
   };
 
   const pendingCount = triage.triage.filter(
     item =>
       item.proposed_fix &&
       !appliedNames.has(item.test_name) &&
+      !applyingSet.has(item.test_name) &&
       !dismissed[item.test_name] &&
       item.category !== "product_defect",
   ).length;
@@ -696,12 +841,23 @@ function TriageGate({
           const isApplied = appliedNames.has(item.test_name);
           const applyErr  = errorMap[item.test_name];
           const dismiss   = dismissed[item.test_name];
-          const isOpen    = expanded[item.test_name];
+          const isRerunning  = rerunning === item.test_name;
+          const rerunResult  = rerunResults[item.test_name];
+          const isRetriaging = retriaging === item.test_name;
+          const retriageItem = retriageItems[item.test_name];
+          const retriageErr  = retriageErrors[item.test_name];
+          const wasReapplied = reapplied.has(item.test_name);
+
+          const rerunPassed  = rerunResult?.outcome === "passed";
+          const rerunFailed  = rerunResult && !rerunPassed;
+
+          const isApplyingThis = applyingSet.has(item.test_name);
 
           return (
-            <div key={item.test_name} className={`px-4 py-3 ${isApplied ? "bg-green-50" : "bg-white"}`}>
-              <div className="flex items-start gap-2">
-                <span className={`font-bold text-sm mt-0.5 ${isApplied ? "text-green-600" : "text-red-500"}`}>
+            <div key={item.test_name} className="bg-white border-b border-amber-100 last:border-0">
+              {/* ── Header row ── */}
+              <div className="flex items-start gap-2 px-4 pt-3 pb-2">
+                <span className={`font-bold text-sm mt-0.5 flex-shrink-0 ${isApplied ? "text-green-600" : "text-red-500"}`}>
                   {isApplied ? "✓" : "✗"}
                 </span>
                 <div className="flex-1 min-w-0">
@@ -709,57 +865,13 @@ function TriageGate({
                     <span className="font-mono text-xs text-gray-800 font-semibold">{item.test_name}</span>
                     <span className={`px-1.5 py-0.5 rounded border text-xs font-semibold ${meta.bg} ${meta.color}`}>{meta.label}</span>
                     <span className={`text-xs font-medium ${CONFIDENCE_COLOR[item.confidence]}`}>{item.confidence} confidence</span>
-                    {isApplied && <span className="text-xs font-semibold text-green-700">fix applied</span>}
-                    {applyErr && <span className="text-xs text-red-600">error: {applyErr}</span>}
                   </div>
-                  <p className="text-xs text-gray-600 mt-1">{item.root_cause}</p>
-
-                  {/* Proposed fix — expandable diff */}
-                  {item.proposed_fix && (
-                    <button
-                      onClick={() => toggleExpanded(item.test_name)}
-                      className="mt-1.5 text-xs text-violet-600 hover:text-violet-800 flex items-center gap-1"
-                    >
-                      <ChevronRight className={`w-3 h-3 transition-transform ${isOpen ? "rotate-90" : ""}`} />
-                      {item.proposed_fix.description}
-                    </button>
-                  )}
-                  {item.proposed_fix && isOpen && (
-                    <div className="mt-2 rounded-lg border border-gray-200 overflow-hidden text-xs">
-                      <div className="px-2 py-1 bg-red-50 border-b border-gray-200">
-                        <span className="font-semibold text-red-600 mr-1">−</span>
-                        <code className="text-red-700 whitespace-pre-wrap break-all">{item.proposed_fix.old_code}</code>
-                      </div>
-                      <div className="px-2 py-1 bg-green-50">
-                        <span className="font-semibold text-green-600 mr-1">+</span>
-                        <code className="text-green-700 whitespace-pre-wrap break-all">{item.proposed_fix.new_code}</code>
-                      </div>
-                    </div>
-                  )}
-
-                  {isDefect && (
-                    <p className="mt-1.5 text-xs text-red-600 bg-red-50 border border-red-200 px-2 py-1 rounded">
-                      ⚠ App bug — no code fix suggested. Mark and surface to the team.
-                    </p>
-                  )}
+                  <p className="text-xs text-gray-600 mt-0.5">{item.root_cause}</p>
                 </div>
 
-                {/* Action buttons */}
-                {!isApplied && (
-                  <div className="flex items-center gap-1 flex-shrink-0 mt-0.5">
-                    {!isDefect && item.proposed_fix && (
-                      <button
-                        onClick={() => applyOne(item)}
-                        disabled={applying}
-                        className="flex items-center gap-1 px-2 py-1 text-xs rounded border font-medium transition-colors bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white border-violet-600"
-                      >
-                        {applying
-                          ? <Loader2 className="w-3 h-3 animate-spin" />
-                          : <CheckCircle2 className="w-3 h-3" />
-                        }
-                        Apply Fix
-                      </button>
-                    )}
+                {/* Action buttons — only shown before fix is applied */}
+                {!isApplied && !isApplyingThis && (
+                  <div className="flex items-center gap-1 flex-shrink-0">
                     <button
                       onClick={() => setDismissed(prev => ({ ...prev, [item.test_name]: "skip" }))}
                       className={`px-2 py-1 text-xs rounded border font-medium transition-colors ${dismiss === "skip" ? "bg-gray-600 text-white border-gray-600" : "border-gray-300 text-gray-500 hover:bg-gray-50"}`}
@@ -768,6 +880,147 @@ function TriageGate({
                       onClick={() => setDismissed(prev => ({ ...prev, [item.test_name]: "bug" }))}
                       className={`px-2 py-1 text-xs rounded border font-medium transition-colors ${dismiss === "bug" ? "bg-red-600 text-white border-red-600" : "border-red-300 text-red-600 hover:bg-red-50"}`}
                     >Bug</button>
+                  </div>
+                )}
+              </div>
+
+              {/* ── Body: fix diff + action ── */}
+              <div className="px-4 pb-3 space-y-2">
+                {/* Proposed fix diff (collapsed by default) */}
+                {item.proposed_fix && !isApplied && (
+                  <FixDiff fix={item.proposed_fix} />
+                )}
+
+                {isDefect && !isApplied && (
+                  <p className="text-xs text-red-600 bg-red-50 border border-red-200 px-2 py-1.5 rounded">
+                    ⚠ App bug — no automated fix available. Mark and surface to the team.
+                  </p>
+                )}
+
+                {/* Applying spinner */}
+                {isApplyingThis && (
+                  <div className="flex items-center gap-2 px-3 py-2 bg-violet-50 border border-violet-200 rounded-lg text-xs text-violet-700 font-medium">
+                    <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
+                    Applying fix to {item.proposed_fix?.file === "pom" ? "page object" : "test"} file…
+                  </div>
+                )}
+
+                {/* Apply error */}
+                {applyErr && !isApplied && (
+                  <div className="px-3 py-2 bg-red-50 border border-red-300 rounded-lg text-xs text-red-700 space-y-1">
+                    <p className="font-semibold flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Could not apply fix automatically</p>
+                    <p>{applyErr}</p>
+                    <p className="text-red-500">Open the diff above and apply the change manually in the file.</p>
+                  </div>
+                )}
+
+                {/* Apply Fix button — only when there's a non-defect fix available */}
+                {!isApplied && !isApplyingThis && !isDefect && item.proposed_fix && (
+                  <button
+                    onClick={() => applyOne(item)}
+                    className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg border font-semibold transition-colors bg-violet-600 hover:bg-violet-700 text-white border-violet-600"
+                  >
+                    <CheckCircle2 className="w-4 h-4" /> Apply Fix
+                  </button>
+                )}
+
+                {/* ── Post-apply section ── */}
+                {isApplied && (
+                  <div className="space-y-2">
+                    {/* Fix applied banner */}
+                    {!rerunResult && !isRerunning && (
+                      <div className="px-3 py-2 bg-green-50 border border-green-300 rounded-lg text-xs space-y-1.5">
+                        <p className="font-semibold text-green-800 flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Fix applied to {item.proposed_fix?.file === "pom" ? "page object (POM)" : "test"} file
+                        </p>
+                        {item.proposed_fix && (
+                          <p className="text-green-700">{item.proposed_fix.description}</p>
+                        )}
+                        <p className="text-green-600">Now re-run this test to confirm the fix works.</p>
+                      </div>
+                    )}
+
+                    {/* Re-run button */}
+                    {!rerunResult && (
+                      <button
+                        onClick={() => handleRerun(item.test_name)}
+                        disabled={isRerunning}
+                        className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg font-semibold transition-colors bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white"
+                      >
+                        {isRerunning
+                          ? <><Loader2 className="w-4 h-4 animate-spin" /> Running test…</>
+                          : <><RefreshCw className="w-4 h-4" /> Re-run This Test</>
+                        }
+                      </button>
+                    )}
+
+                    {/* Re-run passed */}
+                    {rerunPassed && (
+                      <div className="flex items-center gap-2 px-3 py-2 bg-green-100 border border-green-400 rounded-lg text-sm font-semibold text-green-800">
+                        <CheckCircle2 className="w-4 h-4" /> Test is now passing — fix confirmed ✓
+                      </div>
+                    )}
+
+                    {/* Re-run still failing */}
+                    {rerunFailed && (
+                      <div className="space-y-2">
+                        <div className="px-3 py-2 bg-red-50 border border-red-300 rounded-lg text-xs text-red-700 space-y-1">
+                          <p className="font-semibold flex items-center gap-1">
+                            <AlertCircle className="w-3.5 h-3.5" /> Test is still failing after fix
+                          </p>
+                          {rerunResult.message && (
+                            <p className="text-red-500 break-words">{rerunResult.message.slice(0, 200)}</p>
+                          )}
+                        </div>
+
+                        {isRetriaging && (
+                          <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700 font-medium">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Re-analysing failure with AI…
+                          </div>
+                        )}
+
+                        {retriageErr && (
+                          <div className="px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600">
+                            Re-analysis error: {retriageErr}
+                          </div>
+                        )}
+
+                        {retriageItem && !wasReapplied && (
+                          <div className="border border-amber-300 rounded-lg bg-amber-50 p-3 space-y-2">
+                            <p className="text-xs font-semibold text-amber-900 flex items-center gap-1">
+                              <AlertCircle className="w-3.5 h-3.5" /> New AI analysis
+                            </p>
+                            <p className="text-xs text-gray-700">{retriageItem.root_cause}</p>
+                            {retriageItem.proposed_fix ? (
+                              <>
+                                <FixDiff fix={retriageItem.proposed_fix} />
+                                <button
+                                  onClick={() => handleApplyRetriage(item.test_name, retriageItem)}
+                                  disabled={applyingSet.has(item.test_name)}
+                                  className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg font-semibold bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white transition-colors"
+                                >
+                                  {applyingSet.has(item.test_name)
+                                    ? <><Loader2 className="w-4 h-4 animate-spin" /> Applying…</>
+                                    : <><CheckCircle2 className="w-4 h-4" /> Apply New Fix</>
+                                  }
+                                </button>
+                              </>
+                            ) : (
+                              <div className="px-3 py-2 bg-red-50 border border-red-300 rounded-lg text-xs text-red-700 font-semibold">
+                                ⚠ Requires human review — agent cannot auto-fix this failure.
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {retriageItem && wasReapplied && (
+                          <div className="flex items-center gap-2 px-3 py-2 text-xs text-violet-800 bg-violet-50 border border-violet-300 rounded-lg font-medium">
+                            <CheckCircle2 className="w-3.5 h-3.5" /> New fix applied — re-run to verify
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -788,24 +1041,26 @@ function TriageGate({
           {appliedNames.size > 0 && (
             <button
               onClick={onRerun}
-              disabled={applying}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:bg-green-300 text-white text-xs font-medium rounded-lg transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-lg transition-colors"
             >
               <RefreshCw className="w-3 h-3" /> Re-run Suite
             </button>
           )}
-          {pendingCount > 1 && (
-            <button
-              onClick={applyAll}
-              disabled={applying}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white text-xs font-medium rounded-lg transition-colors"
-            >
-              {applying
-                ? <><Loader2 className="w-3 h-3 animate-spin" /> Applying…</>
-                : <><CheckCircle2 className="w-3 h-3" /> Apply All ({pendingCount})</>
-              }
-            </button>
-          )}
+          {pendingCount > 1 && (() => {
+            const batchApplying = applyingSet.size > 0;
+            return (
+              <button
+                onClick={applyAll}
+                disabled={batchApplying}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white text-xs font-medium rounded-lg transition-colors"
+              >
+                {batchApplying
+                  ? <><Loader2 className="w-3 h-3 animate-spin" /> Applying…</>
+                  : <><CheckCircle2 className="w-3 h-3" /> Apply All ({pendingCount})</>
+                }
+              </button>
+            );
+          })()}
         </div>
       </div>
     </div>
@@ -831,7 +1086,6 @@ function SuiteCard({
   const [triage, setTriage]             = useState<TriageResponse | null>(null);
   const [triaging, setTriaging]         = useState(false);
   const [triageError, setTriageError]   = useState<string | null>(null);
-  const [applying, setApplying]         = useState(false);
   const [fixResult, setFixResult]       = useState<ApplyFixResponse | null>(null);
   const [files, setFiles]               = useState<SuiteFilesResponse | null>(null);
   const [loadingFiles, setLoadingFiles] = useState(false);
@@ -894,16 +1148,16 @@ function SuiteCard({
     }
   };
 
-  const handleApplyFixes = async (fixes: ApplyFixItem[]) => {
-    setApplying(true);
+  const handleApplyFixes = async (fixes: ApplyFixItem[]): Promise<ApplyFixResponse> => {
     setTriageError(null);
     try {
       const result = await applyFix(suite.id, fixes);
       setFixResult(result);
+      return result;
     } catch (e: unknown) {
-      setTriageError(e instanceof Error ? e.message : "Apply fix failed");
-    } finally {
-      setApplying(false);
+      const msg = e instanceof Error ? e.message : "Apply fix failed";
+      setTriageError(msg);
+      throw e;
     }
   };
 
@@ -1085,8 +1339,8 @@ function SuiteCard({
               {triage && (
                 <TriageGate
                   triage={triage}
-                  applying={applying}
-                  fixResult={fixResult}
+                  suiteId={suite.id}
+                  headless={headless}
                   onApplyFixes={handleApplyFixes}
                   onRerun={() => onRun(headless)}
                 />

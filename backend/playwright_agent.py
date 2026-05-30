@@ -530,6 +530,87 @@ def run_test_file(test_file: Path, headed: bool = False) -> dict:
     return results
 
 
+def run_single_test(suite_id: str, test_name: str, headed: bool = False) -> dict:
+    """Run a single named test within a suite. Returns a PlaywrightExecutionResults dict."""
+    manifest = _load_manifest()
+    suite = next((s for s in manifest["suites"] if s["id"] == suite_id), None)
+    if not suite:
+        raise ValueError(f"Suite '{suite_id}' not found")
+
+    test_file = TESTS_DIR / suite["test_file"]
+    if not test_file.exists():
+        raise ValueError(f"Test file not found: {suite['test_file']}")
+
+    content = test_file.read_text(encoding="utf-8")
+    class_match = re.search(r"^class\s+(\w+)", content, re.MULTILINE)
+    # Use relative path + string concat — avoid Path("…::…") which is invalid on Windows
+    if class_match:
+        node_id = f"{suite['test_file']}::{class_match.group(1)}::{test_name}"
+    else:
+        node_id = f"{suite['test_file']}::{test_name}"
+
+    results: dict = {
+        "passed": 0, "failed": 0, "error": 0, "total": 0,
+        "tests": [], "raw_output": "", "execution_error": None,
+    }
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        report_file = Path(f.name)
+
+    cmd = [
+        sys.executable, "-m", "pytest", node_id,
+        "--json-report",
+        f"--json-report-file={report_file}",
+        "--tb=short", "-v",
+        "--browser", "chromium",
+    ]
+    if headed:
+        cmd.append("--headed")
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=str(TESTS_DIR),
+        )
+        stdout = proc.stdout or ""
+        stderr = proc.stderr or ""
+        results["raw_output"] = stdout[-3000:] + ("\nSTDERR:\n" + stderr[-1000:] if stderr else "")
+
+        if report_file.exists():
+            report = json.loads(report_file.read_text(encoding="utf-8"))
+            summary = report.get("summary", {})
+            results["passed"] = summary.get("passed", 0)
+            results["failed"] = summary.get("failed", 0)
+            results["error"]  = summary.get("error", 0)
+            results["total"]  = summary.get("total", 0)
+            for test in report.get("tests", []):
+                outcome = test.get("outcome", "unknown")
+                longrepr = ""
+                if outcome != "passed":
+                    raw = (test.get("call", {}).get("longrepr", "") or
+                           test.get("setup", {}).get("longrepr", "") or "")
+                    if isinstance(raw, dict):
+                        raw = raw.get("reprcrash", {}).get("message", "")
+                    longrepr = str(raw)[:500]
+                results["tests"].append({
+                    "name":     test.get("nodeid", "").split("::")[-1],
+                    "outcome":  outcome,
+                    "duration": round(test.get("duration", 0), 2),
+                    "message":  longrepr,
+                })
+            report_file.unlink(missing_ok=True)
+        else:
+            results["execution_error"] = "No report generated.\n" + results["raw_output"][:1000]
+    except subprocess.TimeoutExpired:
+        results["execution_error"] = "Timed out after 5 minutes."
+    except Exception as e:
+        results["execution_error"] = str(e)
+
+    return results
+
+
 # ─── Results review ───────────────────────────────────────────────────────────
 
 def results_review_agent(gherkin_json: str, execution_results: dict) -> str:
@@ -837,6 +918,23 @@ Return a JSON object with EXACTLY this structure (no markdown, no prose):
     return {"suite_id": suite_id, "triage": parsed.get("triage", [])}
 
 
+def _strip_lines(s: str) -> str:
+    """Normalize CRLF → LF and strip trailing whitespace per line."""
+    return "\n".join(line.rstrip() for line in s.replace("\r\n", "\n").split("\n"))
+
+
+def _apply_code_fix(content: str, old_code: str, new_code: str) -> tuple[str, bool]:
+    """Exact match first; fall back to line-normalised match for LLM whitespace drift."""
+    if old_code in content:
+        return content.replace(old_code, new_code, 1), True
+    # Normalise both sides and retry
+    nc = _strip_lines(content)
+    no = _strip_lines(old_code)
+    if no in nc:
+        return nc.replace(no, _strip_lines(new_code), 1), True
+    return content, False
+
+
 def apply_test_fix(suite_id: str, fixes: list) -> dict:
     """Apply a list of agent-proposed code fixes to POM or test files."""
     manifest = _load_manifest()
@@ -863,14 +961,16 @@ def apply_test_fix(suite_id: str, fixes: list) -> dict:
             continue
 
         if file_target == "pom":
-            if old_code in pom_content:
-                pom_content = pom_content.replace(old_code, new_code, 1)
+            updated, ok = _apply_code_fix(pom_content, old_code, new_code)
+            if ok:
+                pom_content = updated
                 applied.append({"test_name": test_name, "file": "pom"})
             else:
                 errors.append({"test_name": test_name, "error": "old_code not found in POM file"})
         else:
-            if old_code in test_content:
-                test_content = test_content.replace(old_code, new_code, 1)
+            updated, ok = _apply_code_fix(test_content, old_code, new_code)
+            if ok:
+                test_content = updated
                 applied.append({"test_name": test_name, "file": "test"})
             else:
                 errors.append({"test_name": test_name, "error": "old_code not found in test file"})
