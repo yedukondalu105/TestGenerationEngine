@@ -77,7 +77,7 @@
       "page_file": "pages/candidate_management_page.py",
       "test_file": "test_suites/test_candidate_management.py",
       "scenario_count": 30,
-      "last_run_at": "2026-05-29T08:38:18.919188",
+      "last_run_at": "2026-05-30T08:14:12.931638",
       "last_results": {
         "passed": 0,
         "failed": 13,
