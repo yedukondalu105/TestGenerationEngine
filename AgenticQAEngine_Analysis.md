@@ -157,24 +157,24 @@ START
   ▼
 [2] requirement_understanding reads: question, retrieved_context
   │                           writes: structured_requirements
-  │                           llm: temp=0.4, RequirementUnderstanding_template.txt
+  │                           llm: temp=0.4, RequirementUnderstanding_template.md
   ▼
 [3] dependency_mapping        reads: question, retrieved_context, structured_requirements
   │                           writes: dependency_mapping
-  │                           llm: temp=0.4, Dependency_prompt.txt
+  │                           llm: temp=0.4, Dependency_prompt.md
   ▼
 [4] scenario_generation  ◄────────────────────────────────────────────┐
   │                           reads: all above + review_feedback (retry)│
   │                           writes: generated_scenarios               │
-  │                           llm: temp=0.3, Scenario_prompt.txt        │
+  │                           llm: temp=0.3, Scenario_prompt.md         │
   ▼                                                                     │
 [5] gherkin_generation        reads: generated_scenarios               │
   │                           writes: generated_gherkin                │
-  │                           llm: temp=0.1, Gherkin_prompt.txt        │
+  │                           llm: temp=0.1, Gherkin_prompt.md         │
   ▼                                                                     │
 [6] review_agent              reads: requirements, scenarios, gherkin  │
   │                           writes: review_feedback, final_output    │
-  │                           llm: temp=0.1, Review_prompt.txt         │
+  │                           llm: temp=0.1, Review_prompt.md          │
   │                                                                     │
   ├── [Needs Improvement AND retry_count < 2] ────────────────────────►┘
   │
@@ -283,6 +283,27 @@ llm_codegen = ChatOpenAI(model="gpt-4o",      temperature=0.1)  # feature, POM, 
 llm_review  = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)  # results review
 ```
 
+### Prompt File System
+
+All LLM prompts are stored as external `.md` files under `backend/prompts/`, loaded at call time via a helper:
+
+```python
+PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+def _load_prompt(name: str) -> str:
+    return (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
+```
+
+Each agent calls `_load_prompt("agent_name").format(**vars)` — editing a prompt means opening the `.md` file directly, with no Python changes required.
+
+| Prompt file | Agent function | Format variables |
+|-------------|---------------|-----------------|
+| `test_data_agent.md` | `test_data_agent()` | `use_case`, `gherkin_json` |
+| `feature_file_agent.md` | `feature_file_agent()` | `use_case`, `gherkin_json` |
+| `page_object_agent.md` | `page_object_agent()` | `app_url`, `class_name`, `gherkin_json` |
+| `test_suite_agent.md` | `test_suite_agent()` | `class_name`, `module_name`, `page_content`, `suite_test_data`, `slug`, `scenario_count`, `gherkin_json` |
+| `triage_agent.md` | `_triage_single_test()` | `vision_instruction`, `use_case`, `pom_content`, `test_content`, `feature_content`, `failure` |
+
 ### Page Object Model Design
 
 Generated POM classes inherit from `BasePage` which provides:
@@ -307,7 +328,7 @@ class BasePage:
         self.page.wait_for_load_state("networkidle")
 ```
 
-Key LLM prompt constraints enforced in `_POM_PROMPT`:
+Key LLM prompt constraints enforced in `backend/prompts/page_object_agent.md`:
 
 - Use `.oxd-alert-content` for invalid credential errors (top-level banner)
 - Use `.oxd-input-field-error-message` for empty field validation (inline "Required")
@@ -855,7 +876,12 @@ TestCasesGenerator/
 │   │                                #   _triage_single_test (per-test vision LLM call)
 │   ├── excel_generator.py           # .xlsx export
 │   ├── zip_generator.py             # .zip bundle export
-│   └── prompts/                     # Prompt .txt files for each agent
+│   └── prompts/                     # External LLM prompt templates (.md)
+│       ├── test_data_agent.md       # Test data extraction agent
+│       ├── feature_file_agent.md    # BDD .feature file agent
+│       ├── page_object_agent.md     # Page Object Model agent (OrangeHRM locator rules)
+│       ├── test_suite_agent.md      # pytest test suite agent
+│       └── triage_agent.md          # Failure triage agent (vision-capable)
 ├── frontend/
 │   ├── app/
 │   │   ├── layout.tsx               # AgenticQAEngine metadata
@@ -897,6 +923,12 @@ TestCasesGenerator/
 │   │   └── *.feature                # Generated Gherkin feature files
 │   └── test_suites/
 │       └── test_*.py                # Generated pytest test files
+├── prompts/                         # LangGraph pipeline prompt templates (.md)
+│   ├── RequirementUnderstanding_template.md
+│   ├── Dependency_prompt.md
+│   ├── Scenario_prompt.md
+│   ├── Gherkin_prompt.md
+│   └── Review_prompt.md
 └── mcp_servers/
     ├── neo4j_mcp_server.py          # 6 Neo4j tools (Graph RAG)
     └── confluence_mcp_server.py     # 5 Confluence tools (requirements)
