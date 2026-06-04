@@ -180,7 +180,7 @@ def requirement_understanding_agent(state: QuestionState) -> dict:
     t0 = time.perf_counter()
 
     prompt = (
-        load_prompt_file("RequirementUnderstanding_template.txt")
+        load_prompt_file("RequirementUnderstanding_template.md")
         + "\n\n"
         + f"User Question:\n{state['question']}\n\n"
         + f"Retrieved Context:\n{state['retrieved_context']}"
@@ -210,7 +210,7 @@ def dependency_mapping_agent(state: QuestionState) -> dict:
     t0 = time.perf_counter()
 
     prompt = (
-        load_prompt_file("Dependency_prompt.txt")
+        load_prompt_file("Dependency_prompt.md")
         + "\n\n"
         + f"User Question:\n{state['question']}\n\n"
         + f"Retrieved Context:\n{state['retrieved_context']}\n\n"
@@ -269,7 +269,7 @@ def scenario_generation_agent(state: QuestionState) -> dict:
         except Exception:
             pass
 
-    prompt_template = load_prompt_file("Scenario_prompt.txt")
+    prompt_template = load_prompt_file("Scenario_prompt.md")
     prompt = f"""
 {prompt_template}
 
@@ -383,7 +383,7 @@ def gherkin_generation_agent(state: QuestionState) -> dict:
     t0 = time.perf_counter()
 
     prompt = (
-        load_prompt_file("Gherkin_prompt.txt")
+        load_prompt_file("Gherkin_prompt.md")
         + "\n\n"
         + f"Generated Scenarios:\n{state['generated_scenarios']}"
     )
@@ -435,7 +435,7 @@ def review_agent(state: QuestionState) -> dict:
     t0 = time.perf_counter()
 
     prompt = (
-        load_prompt_file("Review_prompt.txt")
+        load_prompt_file("Review_prompt.md")
         + "\n\n"
         + f"Structured Requirements:\n{state['structured_requirements']}\n\n"
         + f"Dependency Mapping:\n{state['dependency_mapping']}\n\n"
