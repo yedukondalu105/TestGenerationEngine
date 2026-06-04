@@ -819,6 +819,10 @@ function TriageGate({
 
   const bugCount = Object.values(dismissed).filter(v => v === "bug").length;
 
+  const fixableCount   = triage.triage.filter(i => i.proposed_fix && i.category !== "product_defect").length;
+  const defectCount    = triage.triage.filter(i => i.category === "product_defect").length;
+  const noFixCount     = triage.triage.filter(i => !i.proposed_fix && i.category !== "product_defect").length;
+
   return (
     <div className="border-t border-amber-200 bg-amber-50">
       {/* Header */}
@@ -831,6 +835,37 @@ function TriageGate({
             <span key={m.label} className={`px-1.5 py-0.5 rounded border text-xs font-medium ${m.bg} ${m.color}`}>{m.label}</span>
           ))}
         </div>
+      </div>
+
+      {/* Summary strip */}
+      <div className="flex items-center gap-3 px-4 py-2 border-b border-amber-200 bg-amber-100 flex-wrap">
+        {fixableCount > 0 && (
+          <span className="text-xs font-semibold text-violet-700 flex items-center gap-1">
+            <CheckCircle2 className="w-3.5 h-3.5" /> {fixableCount} auto-fixable
+          </span>
+        )}
+        {defectCount > 0 && (
+          <span className="text-xs font-semibold text-red-600 flex items-center gap-1">
+            <AlertCircle className="w-3.5 h-3.5" /> {defectCount} app bug{defectCount !== 1 ? "s" : ""}
+          </span>
+        )}
+        {noFixCount > 0 && (
+          <span className="text-xs font-semibold text-gray-500 flex items-center gap-1">
+            <X className="w-3.5 h-3.5" /> {noFixCount} manual fix needed
+          </span>
+        )}
+        {fixableCount > 0 && (
+          <button
+            onClick={applyAll}
+            disabled={applyingSet.size > 0}
+            className="ml-auto flex items-center gap-1.5 px-3 py-1 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white text-xs font-semibold rounded-lg transition-colors"
+          >
+            {applyingSet.size > 0
+              ? <><Loader2 className="w-3 h-3 animate-spin" /> Applying…</>
+              : <><CheckCircle2 className="w-3 h-3" /> Apply All Fixes ({pendingCount})</>
+            }
+          </button>
+        )}
       </div>
 
       {/* Per-failure rows */}
@@ -899,6 +934,13 @@ function TriageGate({
                 {isDefect && !isApplied && (
                   <p className="text-xs text-red-600 bg-red-50 border border-red-200 px-2 py-1.5 rounded">
                     ⚠ App bug — no automated fix available. Mark and surface to the team.
+                  </p>
+                )}
+
+                {/* Non-defect but no proposed fix — tell user to fix manually */}
+                {!isDefect && !item.proposed_fix && !isApplied && (
+                  <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 px-2 py-1.5 rounded">
+                    ⚠ AI identified the issue but could not generate an auto-fix — apply the change manually based on the root cause above.
                   </p>
                 )}
 
@@ -1051,7 +1093,7 @@ function TriageGate({
               <RefreshCw className="w-3 h-3" /> Re-run Suite
             </button>
           )}
-          {pendingCount > 1 && (() => {
+          {pendingCount >= 1 && (() => {
             const batchApplying = applyingSet.size > 0;
             return (
               <button
