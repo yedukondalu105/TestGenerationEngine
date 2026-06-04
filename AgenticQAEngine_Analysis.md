@@ -451,24 +451,55 @@ Gate 3 closes the loop from test failures back into the agent layer. Previously 
 | Category | Meaning | Agent Action |
 |----------|---------|--------------|
 | `product_defect` | Test is correct, app is broken (server error, wrong business logic, missing data) | Surface to human as a bug — **no code fix ever generated** |
-| `locator_drift` | A CSS/XPath selector no longer matches (DOM changed, element renamed) | Propose updated selector, using DOM snapshot if available |
+| `locator_drift` | A CSS/XPath selector no longer matches (DOM changed, element renamed) | Propose updated selector using DOM snapshot **and screenshot** if available |
 | `bad_assertion` | LLM generated a wrong expected value at code-gen time (wrong text, count, state) | Propose corrected assertion |
 | `flaky_timeout` | Timing/race condition (timeout waiting for element, networkidle, animation) | Propose wait/retry adjustment |
 
 ### `triage_failures_agent(suite_id, execution_results)`
 
+Architecture changed from **one batch prompt for all failures** to **one focused LLM call per failed test**, enabling per-test screenshot injection via GPT-4o vision.
+
 ```python
 def triage_failures_agent(suite_id: str, execution_results: dict) -> dict:
     # 1. Load POM (up to 12,000 chars), test (up to 12,000 chars), feature (up to 4,000 chars)
-    # 2. For each failed test, check tests/failure_artifacts/{test_name}.html for DOM snapshot
-    # 3. Call gpt-4o with full context: POM + test + feature + error message + DOM snapshot
-    # 4. LLM classifies each failure and proposes old_code → new_code patch
-    # 5. Post-process: _validate_triage_fixes() verifies each proposed_fix.old_code exists,
+    # 2. For each failed test:
+    #    a. Read DOM snapshot from failure_artifacts/{test_name}.html (if present)
+    #    b. Encode screenshot from failure_artifacts/{test_name}.png as base64 (if present)
+    #    c. Call _triage_single_test() — one gpt-4o call with vision when screenshot available
+    # 3. Post-process: _validate_triage_fixes() verifies each proposed_fix.old_code exists,
     #    fuzzy-corrects if close, or nullifies the fix with a manual-apply note if not found
-    # 6. Returns {"suite_id": ..., "triage": [TriageItem, ...]}
+    # 4. Returns {"suite_id": ..., "triage": [TriageItem, ...]}
 ```
 
-**LLM**: `gpt-4o` (higher reasoning needed vs `gpt-4o-mini` for review).
+**LLM**: `gpt-4o` with vision capability (image_url content block injected per-test).
+
+### `_encode_screenshot(test_name) -> str | None`
+
+Reads `tests/failure_artifacts/{test_name}.png` and returns a base64-encoded string. Returns `None` if no screenshot exists (test was not run headed, or artifacts were cleared). The `{test_name}` matches pytest's output format including the browser suffix, e.g. `test_verify_login[chromium]`.
+
+### `_triage_single_test(failure, pom_content, test_content, feature_content, use_case, screenshot_b64)`
+
+Core of the vision upgrade. Makes one focused LLM call for a single failed test:
+
+```
+If screenshot_b64 is not None:
+  content = [
+    {"type": "text",      "text": prompt},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,...", "detail": "high"}}
+  ]
+  → GPT-4o receives the rendered page as a visual input alongside code + error
+
+If screenshot_b64 is None:
+  content = prompt string (text only, same behaviour as before)
+```
+
+The vision-mode prompt instructs the model to:
+- Identify what is actually visible on the page (buttons, inputs, text, modals, banners)
+- Find the correct element the test tried to interact with
+- Propose a selector based on visible label text, placeholder, role, or aria-label
+- Spot visible error messages or unexpected UI state
+
+Each result carries `vision_used: bool` so the frontend can show the Vision badge.
 
 **Per-failure output (`TriageItem`)**:
 ```typescript
@@ -476,13 +507,14 @@ interface TriageItem {
   test_name:    string;
   category:     "product_defect" | "locator_drift" | "bad_assertion" | "flaky_timeout";
   confidence:   "high" | "medium" | "low";
-  root_cause:   string;          // 1-2 sentence explanation
+  root_cause:   string;          // 1-2 sentence explanation; mentions screenshot findings when vision used
   proposed_fix: {
-    file:        "pom" | "test"; // which file to patch
-    description: string;         // human-readable summary of the change
-    old_code:    string;         // exact string to find in the file
-    new_code:    string;         // replacement string
-  } | null;                      // always null for product_defect
+    file:        "pom" | "test";
+    description: string;
+    old_code:    string;
+    new_code:    string;
+  } | null;
+  vision_used:  boolean;         // true when screenshot was passed to the model
 }
 ```
 
@@ -543,7 +575,7 @@ Run suite → failures → amber banner: "X tests failed. Triage Failures →"
   POST /api/test-suites/{id}/triage  (~10-20s LLM call)
   ↓
 TriageGate shows per-failure card:
-  [✗ test_name]  [Category badge]  [confidence]
+  [✗ test_name]  [Category badge]  [confidence]  [Vision] ← teal badge when vision_used=true
   Root cause explanation
   ► collapsible old_code / new_code diff
   [Apply Fix] (full-width violet button, not shown for product_defect)
@@ -603,6 +635,7 @@ const [reapplied, setReapplied]           = useState<Set<string>>(new Set());
 - Re-run targets the exact single test via pytest node ID — does not re-run the whole suite
 - Auto-retriage after re-run fail constructs a minimal `PlaywrightExecutionResults` with just the one test and passes it to the existing triage endpoint
 - "Re-run Suite" (full suite) always available in the action bar once any fix is applied
+- Vision badge (teal, camera icon) shown on cards where `vision_used === true` — tells the reviewer the AI saw the screenshot, not just guessed from HTML
 
 ---
 
@@ -817,7 +850,9 @@ TestCasesGenerator/
 │   │                                #   apply_test_fix (_apply_code_fix 3-pass matching),
 │   │                                #   run_single_test (per-test rerun),
 │   │                                #   _old_code_exists, _find_actual_block (difflib fuzzy),
-│   │                                #   _validate_triage_fixes (post-triage old_code guard)
+│   │                                #   _validate_triage_fixes (post-triage old_code guard),
+│   │                                #   _encode_screenshot (base64 PNG helper),
+│   │                                #   _triage_single_test (per-test vision LLM call)
 │   ├── excel_generator.py           # .xlsx export
 │   ├── zip_generator.py             # .zip bundle export
 │   └── prompts/                     # Prompt .txt files for each agent
