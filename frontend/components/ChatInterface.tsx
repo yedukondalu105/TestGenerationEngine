@@ -5,7 +5,7 @@ import {
   Send, Download, FileSpreadsheet, Bot, User,
   Loader2, ChevronDown, CheckCircle2, AlertCircle,
   Play, FlaskConical, X, RefreshCw, Clock, ChevronRight,
-  Trash2, Eye, Upload, MessageSquare, Save, Pencil,
+  Trash2, Eye, Upload, MessageSquare, Save, Pencil, Camera,
 } from "lucide-react";
 import {
   generateTestCases, downloadExcel, downloadZip,
@@ -865,6 +865,11 @@ function TriageGate({
                     <span className="font-mono text-xs text-gray-800 font-semibold">{item.test_name}</span>
                     <span className={`px-1.5 py-0.5 rounded border text-xs font-semibold ${meta.bg} ${meta.color}`}>{meta.label}</span>
                     <span className={`text-xs font-medium ${CONFIDENCE_COLOR[item.confidence]}`}>{item.confidence} confidence</span>
+                    {item.vision_used && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-xs font-semibold bg-teal-50 border-teal-300 text-teal-700" title="AI analysed the failure screenshot">
+                        <Camera className="w-3 h-3" />Vision
+                      </span>
+                    )}
                   </div>
                   <p className="text-xs text-gray-600 mt-0.5">{item.root_cause}</p>
                 </div>

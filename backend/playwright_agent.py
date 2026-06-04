@@ -3,6 +3,7 @@ import sys
 import re
 import json
 import uuid
+import base64
 import tempfile
 import subprocess
 import datetime
@@ -812,55 +813,55 @@ def list_suites() -> list:
 
 # ─── Failure triage agent ─────────────────────────────────────────────────────
 
-def triage_failures_agent(suite_id: str, execution_results: dict) -> dict:
-    """Classify each failed test and propose a targeted, minimal code fix."""
-    manifest = _load_manifest()
-    suite = next((s for s in manifest["suites"] if s["id"] == suite_id), None)
-    if not suite:
-        raise ValueError(f"Suite '{suite_id}' not found")
+def _encode_screenshot(test_name: str) -> str | None:
+    """Return base64-encoded PNG for a failed test, or None if not found."""
+    path = FAILURE_ARTIFACTS_DIR / f"{test_name}.png"
+    if path.exists():
+        return base64.b64encode(path.read_bytes()).decode("utf-8")
+    return None
 
-    pom_path     = PAGES_DIR   / suite["page_file"]
-    test_path    = TESTS_DIR   / suite["test_file"]
-    feature_path = FEATURES_DIR / suite["feature_file"]
 
-    pom_content     = pom_path.read_text(encoding="utf-8")     if pom_path.exists()     else ""
-    test_content    = test_path.read_text(encoding="utf-8")    if test_path.exists()    else ""
-    feature_content = feature_path.read_text(encoding="utf-8") if feature_path.exists() else ""
+def _triage_single_test(
+    failure: dict,
+    pom_content: str,
+    test_content: str,
+    feature_content: str,
+    use_case: str,
+    screenshot_b64: str | None,
+) -> dict:
+    """Triage one failed test. Uses GPT-4o vision when a screenshot is available."""
+    has_vision = screenshot_b64 is not None
 
-    failed_tests = [t for t in execution_results.get("tests", []) if t["outcome"] != "passed"]
-    if not failed_tests:
-        return {"suite_id": suite_id, "triage": []}
+    vision_instruction = (
+        "A full-page browser screenshot taken AT THE MOMENT OF FAILURE is attached.\n"
+        "Use it to:\n"
+        "  • Identify what is actually visible on the page (buttons, inputs, text, modals, banners)\n"
+        "  • Find the correct element the test tried to interact with\n"
+        "  • Propose a selector based on visible label text, placeholder, role, or aria-label\n"
+        "  • Spot any visible error messages or unexpected UI state\n"
+        "Base your proposed fix on what you SEE in the screenshot, not what you guess from HTML alone."
+        if has_vision else
+        "No screenshot available — base your analysis on the error message and DOM snapshot only."
+    )
 
-    failures_detail = []
-    for t in failed_tests:
-        dom_snapshot = ""
-        dom_file = FAILURE_ARTIFACTS_DIR / f"{t['name']}.html"
-        if dom_file.exists():
-            dom_snapshot = dom_file.read_text(encoding="utf-8")[:3000]
-        failures_detail.append({
-            "test_name":    t["name"],
-            "error_message": t.get("message", "")[:1000],
-            "duration":     t.get("duration", 0),
-            "dom_snapshot": dom_snapshot,
-        })
+    prompt = f"""You are a senior QA engineer triaging a single Playwright test failure.
+{vision_instruction}
 
-    prompt = f"""You are a senior QA engineer triaging automated Playwright test failures.
+Suite: {use_case}
 
-Suite: {suite['use_case']}
-
-=== POM FILE ({suite['page_file']}) ===
+=== POM FILE ===
 {pom_content[:12000]}
 
-=== TEST FILE ({suite['test_file']}) ===
+=== TEST FILE ===
 {test_content[:12000]}
 
 === FEATURE FILE ===
 {feature_content[:4000]}
 
-=== FAILED TESTS (with DOM snapshots where available) ===
-{json.dumps(failures_detail, indent=2)}
+=== FAILED TEST ===
+{json.dumps(failure, indent=2)}
 
-For each failed test classify the root cause into EXACTLY one of:
+Classify the root cause into EXACTLY one of:
 - "product_defect"  — test is correct, the app is broken (server error, missing data, wrong business logic)
 - "locator_drift"   — a selector no longer matches (element not found, strict mode violation, DOM changed)
 - "bad_assertion"   — the LLM generated a wrong expected value at code-gen time (wrong text, wrong count, wrong state)
@@ -871,30 +872,40 @@ Rules:
 2. For all other categories provide a specific, minimal code change:
    - old_code MUST be copied CHARACTER-FOR-CHARACTER from the POM or test file shown above.
      Copy the exact lines including their indentation. Do NOT paraphrase or reformat.
-     Before writing old_code, find the line(s) in the file above and copy them exactly.
-   - new_code is the corrected replacement (can differ from old_code in content).
-   - Keep old_code and new_code as SHORT as possible — ideally just the 1-3 lines that change.
-3. If a DOM snapshot is present use it to find a more reliable selector.
+   - new_code is the corrected replacement.
+   - Keep old_code and new_code as SHORT as possible — ideally just 1-3 lines.
+3. If a screenshot is attached, use it to identify the real element and propose a reliable selector.
 
-Return a JSON object with EXACTLY this structure (no markdown, no prose):
+Return JSON ONLY — no markdown fences, no prose:
 {{
-  "triage": [
-    {{
-      "test_name": "exact_test_function_name",
-      "category": "product_defect|locator_drift|bad_assertion|flaky_timeout",
-      "confidence": "high|medium|low",
-      "root_cause": "1-2 sentence explanation",
-      "proposed_fix": {{
-        "file": "pom",
-        "description": "what this change does",
-        "old_code": "exact string to replace",
-        "new_code": "replacement string"
-      }}
-    }}
-  ]
-}}
-"""
-    raw = llm_codegen.invoke([HumanMessage(content=prompt)]).content.strip()
+  "test_name": "exact_test_function_name",
+  "category": "product_defect|locator_drift|bad_assertion|flaky_timeout",
+  "confidence": "high|medium|low",
+  "root_cause": "1-2 sentence explanation. If you used the screenshot, briefly mention what you saw.",
+  "proposed_fix": {{
+    "file": "pom|test",
+    "description": "what this change does",
+    "old_code": "exact string to replace",
+    "new_code": "replacement string"
+  }}
+}}"""
+
+    if has_vision:
+        content: list = [
+            {"type": "text", "text": prompt},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{screenshot_b64}",
+                    "detail": "high",
+                },
+            },
+        ]
+        msg = HumanMessage(content=content)
+    else:
+        msg = HumanMessage(content=prompt)
+
+    raw = llm_codegen.invoke([msg]).content.strip()
     if raw.startswith("```json"):
         raw = raw[7:]
     elif raw.startswith("```"):
@@ -904,22 +915,60 @@ Return a JSON object with EXACTLY this structure (no markdown, no prose):
     raw = raw.strip()
 
     try:
-        parsed = json.loads(raw)
+        item = json.loads(raw)
+        item["vision_used"] = has_vision
+        return item
     except Exception:
-        parsed = {
-            "triage": [
-                {
-                    "test_name":    t["test_name"],
-                    "category":     "product_defect",
-                    "confidence":   "low",
-                    "root_cause":   "Triage LLM returned unparseable JSON — review manually.",
-                    "proposed_fix": None,
-                }
-                for t in failures_detail
-            ]
+        return {
+            "test_name":    failure["test_name"],
+            "category":     "product_defect",
+            "confidence":   "low",
+            "root_cause":   "Triage LLM returned unparseable JSON — review manually.",
+            "proposed_fix": None,
+            "vision_used":  False,
         }
 
-    triage_list = parsed.get("triage", [])
+
+def triage_failures_agent(suite_id: str, execution_results: dict) -> dict:
+    """Classify each failed test using per-test vision-enhanced LLM calls."""
+    manifest = _load_manifest()
+    suite = next((s for s in manifest["suites"] if s["id"] == suite_id), None)
+    if not suite:
+        raise ValueError(f"Suite '{suite_id}' not found")
+
+    pom_path     = PAGES_DIR    / suite["page_file"]
+    test_path    = TESTS_DIR    / suite["test_file"]
+    feature_path = FEATURES_DIR / suite["feature_file"]
+
+    pom_content     = pom_path.read_text(encoding="utf-8")     if pom_path.exists()     else ""
+    test_content    = test_path.read_text(encoding="utf-8")    if test_path.exists()    else ""
+    feature_content = feature_path.read_text(encoding="utf-8") if feature_path.exists() else ""
+
+    failed_tests = [t for t in execution_results.get("tests", []) if t["outcome"] != "passed"]
+    if not failed_tests:
+        return {"suite_id": suite_id, "triage": []}
+
+    triage_list = []
+    for t in failed_tests:
+        dom_snapshot = ""
+        dom_file = FAILURE_ARTIFACTS_DIR / f"{t['name']}.html"
+        if dom_file.exists():
+            dom_snapshot = dom_file.read_text(encoding="utf-8")[:3000]
+
+        failure = {
+            "test_name":     t["name"],
+            "error_message": t.get("message", "")[:1000],
+            "duration":      t.get("duration", 0),
+            "dom_snapshot":  dom_snapshot,
+        }
+
+        screenshot_b64 = _encode_screenshot(t["name"])
+        item = _triage_single_test(
+            failure, pom_content, test_content, feature_content,
+            suite["use_case"], screenshot_b64,
+        )
+        triage_list.append(item)
+
     triage_list = _validate_triage_fixes(triage_list, pom_content, test_content)
     return {"suite_id": suite_id, "triage": triage_list}
 

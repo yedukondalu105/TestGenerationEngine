@@ -323,6 +323,7 @@ export interface TriageItem {
   confidence: TriageConfidence;
   root_cause: string;
   proposed_fix: TriageProposedFix | null;
+  vision_used?: boolean;
 }
 
 export interface TriageResponse {
