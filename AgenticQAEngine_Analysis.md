@@ -525,17 +525,18 @@ Each result carries `vision_used: bool` so the frontend can show the Vision badg
 **Per-failure output (`TriageItem`)**:
 ```typescript
 interface TriageItem {
-  test_name:    string;
-  category:     "product_defect" | "locator_drift" | "bad_assertion" | "flaky_timeout";
-  confidence:   "high" | "medium" | "low";
-  root_cause:   string;          // 1-2 sentence explanation; mentions screenshot findings when vision used
-  proposed_fix: {
+  test_name:     string;
+  category:      "product_defect" | "locator_drift" | "bad_assertion" | "flaky_timeout";
+  confidence:    "high" | "medium" | "low";
+  root_cause:    string;          // 1-2 sentence explanation; mentions screenshot findings when vision used
+  proposed_fix:  {
     file:        "pom" | "test";
     description: string;
     old_code:    string;
     new_code:    string;
   } | null;
-  vision_used:  boolean;         // true when screenshot was passed to the model
+  vision_used:   boolean;         // true when screenshot was passed to the model
+  fix_validated?: boolean;        // true=auto-apply safe; false=diff shown as manual reference only; undefined=validated (legacy)
 }
 ```
 
@@ -563,16 +564,16 @@ The prompt enforces verbatim `old_code` copying:
 
 ### Post-Triage Validation Pipeline
 
-After the LLM returns triage JSON, `_validate_triage_fixes()` runs a second pass over every `proposed_fix` before the response is returned to the frontend. This eliminates the "old_code not found" error by catching hallucinated or drifted `old_code` server-side:
+After the LLM returns triage JSON, `_validate_triage_fixes()` runs a second pass over every `proposed_fix` before the response is returned to the frontend. It catches hallucinated or drifted `old_code` server-side and preserves the diff for manual reference even when auto-apply is unsafe:
 
 ```
 For each TriageItem with a proposed_fix:
   1. _old_code_exists(content, old_code)   — 3-pass check (exact / normalized / stripped-indent)
-     → match found: keep item as-is
+     → match found: set fix_validated=True, keep item as-is
      → no match: escalate to fuzzy search
   2. _find_actual_block(content, old_code) — difflib.SequenceMatcher sliding-window search
-     → ratio ≥ 0.75: replace proposed_fix.old_code with the actual file block
-     → ratio < 0.75: nullify proposed_fix, append "apply manually" note to root_cause
+     → ratio ≥ 0.75: replace proposed_fix.old_code with actual file block, fix_validated=True
+     → ratio < 0.75: set fix_validated=False — diff kept intact for manual reference
 ```
 
 **`_old_code_exists(content, old_code) -> bool`**  
@@ -582,7 +583,7 @@ Same three passes as `_apply_code_fix`: exact substring → CRLF/trailing-whites
 Slides a window of `len(o_lines)` lines across `content`, computing `difflib.SequenceMatcher.ratio()` on leading-whitespace-stripped line keys. Returns the actual file lines for the highest-scoring window if `ratio ≥ 0.75`, else `None`. This handles minor indent drift, renamed variables, or slight reformatting by the LLM.
 
 **`_validate_triage_fixes(triage_items, pom_content, test_content) -> list`**  
-Orchestrates the above two functions for every item in the triage list. Safe to call even when `proposed_fix` is `null` or missing fields (skips those unchanged).
+Orchestrates the above two functions for every item in the triage list. Previously nullified `proposed_fix` on fuzzy miss — now preserves it with `fix_validated=False` so the frontend can show the diff as a manual reference without offering auto-apply. Safe to call when `proposed_fix` is already `null` (skips those unchanged).
 
 ### Gate 3 UI — `TriageGate` Component
 
@@ -598,19 +599,25 @@ Run suite → failures → amber banner: "X tests failed. Triage Failures →"
 TriageGate shows per-failure card:
   [✗ test_name]  [Category badge]  [confidence]  [Vision] ← teal badge when vision_used=true
   Root cause explanation
-  ► collapsible old_code / new_code diff
-  [Apply Fix] (full-width violet button, not shown for product_defect)
+  ► collapsible old_code / new_code diff  ← always shown when AI produced a diff
   [Skip]  [Bug]  (dismiss without backend call)
 
-  ─── Click "Apply Fix" ───────────────────────────────────────────────────────
-  Button immediately shows "Applying fix to [pom|test] file…" (violet banner + spinner)
-  POST /api/test-suites/{id}/apply-fix
-    ├── Success (applied):
-    │   Full-width green banner: "Fix applied to [file] — [description] — re-run to confirm"
-    │   Full-width blue button: [Re-run This Test]
-    │
-    └── Error (old_code not found even after 3-pass match):
-        Full-width red box: "Could not apply fix — [reason] — apply the diff manually"
+  Three possible action states based on fix_validated:
+
+  ── fix_validated=true (old_code confirmed in file) ─────────────────────────
+  [Apply Fix]  full-width violet button
+    → immediately shows "Applying fix to [pom|test] file…" spinner
+    → POST /api/test-suites/{id}/apply-fix
+       ├── Success: green banner "Fix applied — re-run to confirm"
+       │           blue button [Re-run This Test]
+       └── Error:   red box "Could not apply — apply diff manually"
+
+  ── fix_validated=false (fuzzy match failed, diff kept as reference) ─────────
+  Amber warning: "Could not locate this exact code block — apply manually"
+  [Copy Diff to Clipboard]  gray button — copies old/new to clipboard
+
+  ── proposed_fix=null (AI produced no diff at all) ──────────────────────────
+  Gray note: "AI identified the issue but could not generate a diff"
 
   ─── Click "Re-run This Test" ────────────────────────────────────────────────
   POST /api/test-suites/{id}/run-test  (single-test pytest, ≤5 min timeout)
@@ -623,9 +630,12 @@ TriageGate shows per-failure card:
                  ├── Has proposed_fix → new diff + full-width [Apply New Fix]
                  └── No fix possible  → "⚠ Requires human review — agent cannot auto-fix"
 
+Summary strip (top of triage panel):
+  [N auto-fixable]  [N app bugs]  [N manual fix needed]  [Apply All Fixes (N) →]
+  "Apply All" only includes fix_validated=true rows; manual-reference rows excluded
+
 Bottom action bar:
   [✓ N fixes applied]  [Re-run Suite]  [Apply All (N)]
-  "Apply All" only shown when 2+ rows have pending fixes
 ```
 
 **State architecture (`TriageGate` owns all apply/rerun state locally):**
@@ -653,6 +663,8 @@ const [reapplied, setReapplied]           = useState<Set<string>>(new Set());
 - All visual state (loading, applied, error, rerun, retriage) is owned by `TriageGate` — no prop-based feedback loop
 - Every state transition uses **full-width banners** — impossible to miss (vs. previous tiny inline badges)
 - `product_defect` rows never show "Apply Fix" — only "Bug" and "Skip"
+- `fix_validated=false` rows show the diff as a read-only reference + "Copy Diff" — auto-apply blocked because `old_code` location is uncertain; diff is never hidden
+- `fix_validated` defaults to `undefined` for items that pass validation, so `fix_validated !== false` is the correct guard (not `=== true`) — backward-compatible with older triage results
 - Re-run targets the exact single test via pytest node ID — does not re-run the whole suite
 - Auto-retriage after re-run fail constructs a minimal `PlaywrightExecutionResults` with just the one test and passes it to the existing triage endpoint
 - "Re-run Suite" (full suite) always available in the action bar once any fix is applied
