@@ -324,6 +324,7 @@ export interface TriageItem {
   root_cause: string;
   proposed_fix: TriageProposedFix | null;
   vision_used?: boolean;
+  fix_validated?: boolean;
 }
 
 export interface TriageResponse {

@@ -830,7 +830,8 @@ def _find_actual_block(content: str, llm_old_code: str, threshold: float = 0.75)
 def _validate_triage_fixes(triage_items: list, pom_content: str, test_content: str) -> list:
     """
     Post-triage validation: verify each proposed_fix.old_code exists in the target file.
-    If not found, attempt fuzzy correction. If still not found, nullify the fix with a note.
+    If not found, attempt fuzzy correction. If still not found, mark fix_validated=False so
+    the frontend can show the diff as a manual reference without offering auto-apply.
     """
     result = []
     for item in triage_items:
@@ -842,6 +843,8 @@ def _validate_triage_fixes(triage_items: list, pom_content: str, test_content: s
         file_target = fix.get("file", "pom")
         content = pom_content if file_target == "pom" else test_content
         if _old_code_exists(content, old_code):
+            item = dict(item)
+            item["fix_validated"] = True
             result.append(item)
             continue
         actual = _find_actual_block(content, old_code)
@@ -849,14 +852,12 @@ def _validate_triage_fixes(triage_items: list, pom_content: str, test_content: s
             item = dict(item)
             item["proposed_fix"] = dict(fix)
             item["proposed_fix"]["old_code"] = actual
+            item["fix_validated"] = True
             result.append(item)
         else:
+            # Keep the LLM diff visible as a manual reference — do not nullify
             item = dict(item)
-            item["proposed_fix"] = None
-            item["root_cause"] = (
-                item.get("root_cause", "")
-                + " [Auto-fix unavailable — apply the suggested change manually using the diff.]"
-            )
+            item["fix_validated"] = False
             result.append(item)
     return result
 

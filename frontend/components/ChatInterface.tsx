@@ -5,7 +5,7 @@ import {
   Send, Download, FileSpreadsheet, Bot, User,
   Loader2, ChevronDown, CheckCircle2, AlertCircle,
   Play, FlaskConical, X, RefreshCw, Clock, ChevronRight,
-  Trash2, Eye, Upload, MessageSquare, Save, Pencil, Camera,
+  Trash2, Eye, Upload, MessageSquare, Save, Pencil, Camera, Copy,
 } from "lucide-react";
 import {
   generateTestCases, downloadExcel, downloadZip,
@@ -811,6 +811,7 @@ function TriageGate({
   const pendingCount = triage.triage.filter(
     item =>
       item.proposed_fix &&
+      item.fix_validated !== false &&
       !appliedNames.has(item.test_name) &&
       !applyingSet.has(item.test_name) &&
       !dismissed[item.test_name] &&
@@ -819,9 +820,9 @@ function TriageGate({
 
   const bugCount = Object.values(dismissed).filter(v => v === "bug").length;
 
-  const fixableCount   = triage.triage.filter(i => i.proposed_fix && i.category !== "product_defect").length;
+  const fixableCount   = triage.triage.filter(i => i.proposed_fix && i.fix_validated !== false && i.category !== "product_defect").length;
   const defectCount    = triage.triage.filter(i => i.category === "product_defect").length;
-  const noFixCount     = triage.triage.filter(i => !i.proposed_fix && i.category !== "product_defect").length;
+  const noFixCount     = triage.triage.filter(i => (!i.proposed_fix || i.fix_validated === false) && i.category !== "product_defect").length;
 
   return (
     <div className="border-t border-amber-200 bg-amber-50">
@@ -850,8 +851,8 @@ function TriageGate({
           </span>
         )}
         {noFixCount > 0 && (
-          <span className="text-xs font-semibold text-gray-500 flex items-center gap-1">
-            <X className="w-3.5 h-3.5" /> {noFixCount} manual fix needed
+          <span className="text-xs font-semibold text-amber-700 flex items-center gap-1">
+            <Copy className="w-3.5 h-3.5" /> {noFixCount} manual fix needed
           </span>
         )}
         {fixableCount > 0 && (
@@ -926,7 +927,7 @@ function TriageGate({
 
               {/* ── Body: fix diff + action ── */}
               <div className="px-4 pb-3 space-y-2">
-                {/* Proposed fix diff (collapsed by default) */}
+                {/* Proposed fix diff — shown for both validated and unvalidated */}
                 {item.proposed_fix && !isApplied && (
                   <FixDiff fix={item.proposed_fix} />
                 )}
@@ -937,11 +938,29 @@ function TriageGate({
                   </p>
                 )}
 
-                {/* Non-defect but no proposed fix — tell user to fix manually */}
+                {/* No proposed fix at all */}
                 {!isDefect && !item.proposed_fix && !isApplied && (
                   <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 px-2 py-1.5 rounded">
-                    ⚠ AI identified the issue but could not generate an auto-fix — apply the change manually based on the root cause above.
+                    ⚠ AI identified the issue but could not generate a diff — apply the change manually based on the root cause above.
                   </p>
+                )}
+
+                {/* Unvalidated fix — diff is shown but auto-apply is unsafe */}
+                {!isDefect && item.proposed_fix && item.fix_validated === false && !isApplied && (
+                  <div className="space-y-1.5">
+                    <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1.5 rounded">
+                      ⚠ Could not locate this exact code block in the file — use the diff above as a reference and apply manually.
+                    </p>
+                    <button
+                      onClick={() => {
+                        const fix = item.proposed_fix!;
+                        navigator.clipboard.writeText(`--- ${fix.file}\n- ${fix.old_code}\n+ ${fix.new_code}`);
+                      }}
+                      className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg border font-semibold transition-colors bg-gray-100 hover:bg-gray-200 text-gray-700 border-gray-300"
+                    >
+                      <Copy className="w-4 h-4" /> Copy Diff to Clipboard
+                    </button>
+                  </div>
                 )}
 
                 {/* Applying spinner */}
@@ -961,8 +980,8 @@ function TriageGate({
                   </div>
                 )}
 
-                {/* Apply Fix button — only when there's a non-defect fix available */}
-                {!isApplied && !isApplyingThis && !isDefect && item.proposed_fix && (
+                {/* Apply Fix button — only when fix is validated (old_code confirmed in file) */}
+                {!isApplied && !isApplyingThis && !isDefect && item.proposed_fix && item.fix_validated !== false && (
                   <button
                     onClick={() => applyOne(item)}
                     className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg border font-semibold transition-colors bg-violet-600 hover:bg-violet-700 text-white border-violet-600"
