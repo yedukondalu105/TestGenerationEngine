@@ -24,6 +24,7 @@ SUITES_DIR            = TESTS_DIR / "test_suites"
 MANIFEST              = TESTS_DIR / "suites.json"
 TEST_DATA_FILE        = TESTS_DIR / "test_data.json"
 FAILURE_ARTIFACTS_DIR = TESTS_DIR / "failure_artifacts"
+PROMPTS_DIR           = Path(__file__).parent / "prompts"
 
 llm_codegen = ChatOpenAI(model="gpt-4o",     temperature=0.1)
 llm_review  = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
@@ -80,40 +81,14 @@ def _remove_test_data(slug: str) -> None:
     TEST_DATA_FILE.write_text(json.dumps(td, indent=2), encoding="utf-8")
 
 
+def _load_prompt(name: str) -> str:
+    return (PROMPTS_DIR / f"{name}.md").read_text(encoding="utf-8")
+
+
 # ─── Agent 0: Test data extraction ───────────────────────────────────────────
 
-_TEST_DATA_PROMPT = """You are extracting test data from Gherkin test scenarios for a data-driven test suite.
-
-Suite: {use_case}
-
-Analyze the Gherkin scenarios below and extract ALL concrete test data values used in them.
-Return a flat JSON object where keys are descriptive names and values are the exact strings used.
-
-Common keys for authentication suites:
-  valid_username, valid_password       — credentials that succeed
-  invalid_username, invalid_password   — credentials that fail
-  empty_value                          — "" (empty string, for empty-field tests)
-  short_username, short_password       — values below minimum length
-  invalid_format                       — value with invalid characters (e.g. "!nv@l!d")
-  max_length_username, max_length_password — value at/above maximum allowed length
-
-For other suites, extract keys matching the actual data in the scenarios
-(e.g. employee_name, department_name, job_title, start_date, end_date, amount, etc.).
-
-Rules:
-- Return ONLY a flat JSON object — no nesting, no arrays
-- All values must be strings
-- If a value is repeated in multiple scenarios use it once under the most descriptive key
-- Do NOT invent values that are not in the scenarios; derive them from the scenario text
-- Return ONLY valid JSON. No markdown fences. No prose.
-
-Gherkin scenarios:
-{gherkin_json}
-"""
-
-
 def test_data_agent(gherkin_json: str, use_case: str) -> dict:
-    prompt = _TEST_DATA_PROMPT.format(use_case=use_case, gherkin_json=gherkin_json)
+    prompt = _load_prompt("test_data_agent").format(use_case=use_case, gherkin_json=gherkin_json)
     result = llm_codegen.invoke([HumanMessage(content=prompt)])
     content = result.content.strip()
     if content.startswith("```json"):
@@ -132,24 +107,8 @@ def test_data_agent(gherkin_json: str, use_case: str) -> dict:
 
 # ─── Agent 1: Cucumber .feature file ─────────────────────────────────────────
 
-_FEATURE_PROMPT = """You are a BDD expert. Convert the Gherkin JSON below into a well-formed Cucumber .feature file.
-
-Feature name: {use_case}
-
-Rules:
-- First line: Feature: {use_case}
-- Add a Background: section if login appears in most scenarios (Given I am logged in as Admin)
-- Each scenario_name → Scenario: <name>  (preserve type in a @tag)
-- Convert given/when/then arrays into proper Gherkin step lines
-- Use tags from the scenario tags field (prefix with @)
-- Return ONLY the .feature file content. No markdown fences. No prose.
-
-Gherkin JSON:
-{gherkin_json}
-"""
-
 def feature_file_agent(gherkin_json: str, use_case: str) -> str:
-    prompt = _FEATURE_PROMPT.format(use_case=use_case, gherkin_json=gherkin_json)
+    prompt = _load_prompt("feature_file_agent").format(use_case=use_case, gherkin_json=gherkin_json)
     result = llm_codegen.invoke([HumanMessage(content=prompt)])
     content = result.content.strip()
     if content.startswith("```"):
@@ -161,134 +120,13 @@ def feature_file_agent(gherkin_json: str, use_case: str) -> str:
 
 # ─── Agent 2: Page Object Model ───────────────────────────────────────────────
 
-_POM_PROMPT = """You are a senior Playwright automation engineer.
-Generate a Page Object Model (POM) Python class for the OrangeHRM application.
-
-Target URL  : {app_url}
-Class name  : {class_name}
-Base class  : BasePage  (already has login() and navigate_to(menu_item) methods)
-
-━━━ ORANGEHRM LOCATOR REFERENCE ━━━
-Nav links        : self.page.get_by_role("link", name="<Module>").first
-Sub-menu items   : self.page.get_by_role("menuitem", name="<Item>")
-Primary button   : self.page.get_by_role("button", name="<Label>")
-Text input nth   : self.page.locator("input.oxd-input").nth(N)
-Named textbox    : self.page.get_by_role("textbox", name="<Label>")
-Custom dropdown  : self.page.locator(".oxd-select-text").nth(N).click()
-                   self.page.get_by_role("option", name="<Value>").click()
-Autocomplete     : self.page.locator(".oxd-autocomplete-text-input input").nth(N).fill("text")
-                   self.page.locator(".oxd-autocomplete-option", has_text="text").first.click()
-Table rows       : self.page.locator(".oxd-table-row")
-Row actions      : self.page.locator(".oxd-table-cell-actions").nth(N)
-Edit icon        : self.page.locator(".oxd-table-cell-actions .oxd-icon-button").nth(N)
-Toast success    : self.page.locator(".oxd-toast--success")
-Modal confirm    : self.page.get_by_role("button", name="Yes, Delete")
-Checkbox         : self.page.locator(".oxd-checkbox-input").nth(N)
-Date input       : self.page.locator("input.oxd-date-input").nth(N)
-
-━━━ CODING RULES ━━━
-- from pages.base_page import BasePage
-- from playwright.sync_api import Page, expect
-- Inherit: class {class_name}(BasePage)
-- __init__(self, page: Page): call super().__init__(page), define all locators as self.xxx
-- One method per meaningful action (add_record, search, edit_record, delete_record, etc.)
-- Methods should use self.page.wait_for_load_state("networkidle") after actions that navigate
-- Assertion methods use expect() internally and return None, e.g.:
-    def assert_success_toast(self): expect(self.page.locator(".oxd-toast--success")).to_be_visible()
-    def assert_error_message(self): expect(self.page.locator(".oxd-alert-content")).to_be_visible()
-    def assert_on_dashboard(self): expect(self.page).to_have_url(re.compile(r".*/dashboard/index"))
-- NEVER return booleans — always use expect() internally for assertions
-- Add import re at the top
-- Return ONLY valid Python. No markdown fences. No prose. No comments.
-
-━━━ CRITICAL: LOGIN / AUTHENTICATION PAGES ━━━
-Detect whether the scenarios are testing the LOGIN PAGE ITSELF (credentials, validation, access control).
-If YES — the test must interact with the login form, so:
-  - ALWAYS override BOTH login() AND navigate() — every login-page POM must have them:
-        def login(self):
-            self.goto_app()
-        def navigate(self):
-            self.page.wait_for_load_state("networkidle")
-  - Provide action methods for the form: provide_username(text), provide_password(text), attempt_login()
-  - Provide assertion methods: assert_on_dashboard(), assert_error_message(), assert_invalid_credentials(),
-    assert_session_expired(), assert_access_denied()
-  - OrangeHRM shows TWO kinds of errors — use the correct locator for each:
-      Empty field → inline "Required" text → locator: ".oxd-input-field-error-message"
-      Wrong credentials / access denied → alert banner → locator: ".oxd-alert-content"
-  - assert_error_message():       expect(self.page.locator(".oxd-input-field-error-message").first).to_be_visible()
-  - assert_invalid_credentials(): expect(self.page.locator(".oxd-alert-content")).to_be_visible()
-  - assert_session_expired():     expect(self.page.locator(".oxd-alert-content")).to_be_visible()
-  - assert_access_denied():       expect(self.page.locator(".oxd-alert-content")).to_be_visible()
-  - assert_on_dashboard():        expect(self.page).to_have_url(re.compile(r".*/dashboard/index"))
-  - NEVER use to_have_text() for any of these assertions
-
-If NO (scenarios test a module AFTER login) — do NOT override login():
-  - Call self.login() (inherited from BasePage) which does full Admin login
-  - navigate(): call self.navigate_to("<MainMenu>") then click sub-menus if needed
-
-Scenarios to model:
-{gherkin_json}
-"""
-
 def page_object_agent(gherkin_json: str, use_case: str, class_name: str) -> str:
-    prompt = _POM_PROMPT.format(app_url=APP_URL, use_case=use_case, class_name=class_name, gherkin_json=gherkin_json)
+    prompt = _load_prompt("page_object_agent").format(app_url=APP_URL, use_case=use_case, class_name=class_name, gherkin_json=gherkin_json)
     result = llm_codegen.invoke([HumanMessage(content=prompt)])
     return _strip_fences(result.content)
 
 
 # ─── Agent 3: pytest test suite ───────────────────────────────────────────────
-
-_TEST_PROMPT = """You are a pytest-playwright test engineer.
-Generate a COMPLETE pytest test file implementing ALL Gherkin scenarios using the Page Object Model.
-
-POM class  : {class_name}
-POM import : from pages.{module_name} import {class_name}
-
-━━━ THE ACTUAL POM SOURCE CODE (use ONLY the methods defined here) ━━━
-{page_content}
-━━━ END OF POM SOURCE ━━━
-
-━━━ TEST DATA — use the test_data fixture, do NOT hardcode values ━━━
-A session-scoped pytest fixture `test_data` loads tests/test_data.json automatically.
-The following data is available under test_data["suites"]["{slug}"]:
-{suite_test_data}
-
-Access pattern in every test:
-    td = test_data["suites"]["{slug}"]
-    # then use td["valid_username"], td["invalid_password"], td["empty_value"], etc.
-
-Successful login redirects to the dashboard — it does NOT show a toast — so always use
-assert_on_dashboard() for "login succeeds" assertions, NEVER assert_success_toast().
-
-━━━ STRUCTURE RULES ━━━
-Imports (top of file, exactly these):
-    import pytest
-    from playwright.sync_api import Page
-    from pages.{module_name} import {class_name}
-
-Each scenario → one function:
-    def test_<snake_case_scenario_name>(page: Page, test_data: dict):
-        td = test_data["suites"]["{slug}"]
-        obj = {class_name}(page)
-        obj.login()      # MANDATORY — always first
-        obj.navigate()   # MANDATORY — always second
-        # use td["key"] for all test data values; call POM methods for When/Then steps
-
-Rules:
-- ONLY call methods that actually exist in the POM source above — invent NOTHING
-- Every test MUST start with obj.login() then obj.navigate() — no exceptions
-- Use @pytest.mark.skip(reason="...") for scenarios that require accounts/state not available
-  (non-admin users, session expiry, etc.) — do not attempt to implement them
-- Assertion methods on the POM already call expect() internally — just call them: obj.assert_xxx()
-- Do NOT call expect() on boolean values or method return values — only on Locator objects
-- Each test is fully independent
-- CRITICAL: implement all {scenario_count} scenarios. Do NOT skip any without a reason.
-- Return ONLY valid Python. No markdown fences. No prose. No comments.
-
-Gherkin scenarios:
-{gherkin_json}
-"""
-
 
 def test_suite_agent(
     gherkin_json: str,
@@ -301,7 +139,7 @@ def test_suite_agent(
     suite_test_data: dict | None = None,
 ) -> str:
     data_str = json.dumps(suite_test_data or {}, indent=2)
-    prompt = _TEST_PROMPT.format(
+    prompt = _load_prompt("test_suite_agent").format(
         use_case=use_case,
         class_name=class_name,
         module_name=module_name,
@@ -844,51 +682,14 @@ def _triage_single_test(
         "No screenshot available — base your analysis on the error message and DOM snapshot only."
     )
 
-    prompt = f"""You are a senior QA engineer triaging a single Playwright test failure.
-{vision_instruction}
-
-Suite: {use_case}
-
-=== POM FILE ===
-{pom_content[:12000]}
-
-=== TEST FILE ===
-{test_content[:12000]}
-
-=== FEATURE FILE ===
-{feature_content[:4000]}
-
-=== FAILED TEST ===
-{json.dumps(failure, indent=2)}
-
-Classify the root cause into EXACTLY one of:
-- "product_defect"  — test is correct, the app is broken (server error, missing data, wrong business logic)
-- "locator_drift"   — a selector no longer matches (element not found, strict mode violation, DOM changed)
-- "bad_assertion"   — the LLM generated a wrong expected value at code-gen time (wrong text, wrong count, wrong state)
-- "flaky_timeout"   — timing/race condition (timeout waiting for element, networkidle, animation not complete)
-
-Rules:
-1. For "product_defect" set proposed_fix to null — NEVER suggest a code fix for an app bug.
-2. For all other categories provide a specific, minimal code change:
-   - old_code MUST be copied CHARACTER-FOR-CHARACTER from the POM or test file shown above.
-     Copy the exact lines including their indentation. Do NOT paraphrase or reformat.
-   - new_code is the corrected replacement.
-   - Keep old_code and new_code as SHORT as possible — ideally just 1-3 lines.
-3. If a screenshot is attached, use it to identify the real element and propose a reliable selector.
-
-Return JSON ONLY — no markdown fences, no prose:
-{{
-  "test_name": "exact_test_function_name",
-  "category": "product_defect|locator_drift|bad_assertion|flaky_timeout",
-  "confidence": "high|medium|low",
-  "root_cause": "1-2 sentence explanation. If you used the screenshot, briefly mention what you saw.",
-  "proposed_fix": {{
-    "file": "pom|test",
-    "description": "what this change does",
-    "old_code": "exact string to replace",
-    "new_code": "replacement string"
-  }}
-}}"""
+    prompt = _load_prompt("triage_agent").format(
+        vision_instruction=vision_instruction,
+        use_case=use_case,
+        pom_content=pom_content[:12000],
+        test_content=test_content[:12000],
+        feature_content=feature_content[:4000],
+        failure=json.dumps(failure, indent=2),
+    )
 
     if has_vision:
         content: list = [
