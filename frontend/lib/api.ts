@@ -262,7 +262,10 @@ export async function runPlaywright(final_output: string): Promise<PlaywrightRes
 
 export async function getTestSuites(): Promise<TestSuite[]> {
   const res = await fetch("/api/test-suites");
-  if (!res.ok) throw new Error("Failed to load test suites");
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `Failed to load test suites (${res.status})`);
+  }
   const data = await res.json();
   return data.suites ?? [];
 }

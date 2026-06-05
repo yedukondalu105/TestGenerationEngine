@@ -115,6 +115,8 @@ async def generate(request: GenerateRequest):
 
     try:
         result = await asyncio.to_thread(agent.invoke, initial_state)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -255,6 +257,8 @@ async def regenerate_scenarios_endpoint(request: RegenerateScenariosRequest):
     }
     try:
         result = await asyncio.to_thread(agent.invoke, initial_state)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

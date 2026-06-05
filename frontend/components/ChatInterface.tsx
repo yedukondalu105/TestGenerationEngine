@@ -56,10 +56,10 @@ const TYPE_COLORS: Record<string, string> = {
 const PIPELINE_STEPS = ["RAG Retrieval", "Requirements", "Dependencies", "Scenarios", "Gherkin", "Review"];
 
 const SUGGESTED_PROMPTS = [
-  "Generate test cases for Trade Amendment workflow",
   "Generate test cases for user login and authentication",
-  "Generate test cases for Trade Settlement process",
-  "Generate test cases for Trade Approval workflow",
+  "Generate test cases for candidate management and recruitment workflow",
+  "Generate test cases for employee leave management",
+  "Generate test cases for dashboard access and navigation",
 ];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

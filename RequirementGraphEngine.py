@@ -212,6 +212,22 @@ class RequirementGraphEngine:
 
         return result
     
+    def _check_domain_relevance(self, question: str) -> bool:
+        """Return True if the question is relevant to the OrangeHRM knowledge base."""
+        response = self.llm.invoke(
+            "You are a relevance classifier for an OrangeHRM HR Management System test case generator.\n"
+            "The knowledge base contains ONLY OrangeHRM HRMS requirements covering these modules:\n"
+            "  - Authentication & Authorization (login, logout, session, roles, permissions)\n"
+            "  - Dashboard (widgets, shortcuts, quick launch)\n"
+            "  - Recruitment (candidates, resume upload, interview scheduling, hiring workflow)\n"
+            "  - PIM / Employee Management (employee profiles, personal info)\n"
+            "  - Admin Management (user administration, system configuration)\n\n"
+            f"Question: {question}\n\n"
+            "Is this question relevant to any of the above OrangeHRM modules? "
+            "Reply with ONLY 'YES' or 'NO'."
+        )
+        return response.content.strip().upper().startswith("YES")
+
     def _retriever(self, question: str) -> str:
         """Hybrid retriever combining graph traversal and vector similarity."""
         # Graph search
@@ -233,14 +249,19 @@ class RequirementGraphEngine:
 """
 
         return final_data
-    
+
     def retrieve_raw_context(self, question: str) -> str:
         """Return raw hybrid retrieval results without any LLM synthesis.
 
-        This is the right call for pipeline Node 1 — it passes factual knowledge-base
-        content (graph relationships + document chunks) to downstream agents unchanged,
-        so no information is lost or pre-interpreted by a generation step.
+        Raises ValueError if the question is not relevant to the OrangeHRM knowledge base,
+        preventing the downstream pipeline from hallucinating on unrelated queries.
         """
+        if not self._check_domain_relevance(question):
+            raise ValueError(
+                "No relevant requirements found in the knowledge base for this query. "
+                "This system only supports OrangeHRM HRMS modules: Authentication, "
+                "Dashboard, Recruitment, Employee Management, and Admin Management."
+            )
         return self._retriever(question)
 
     def ask_question(self, question: str) -> str:
