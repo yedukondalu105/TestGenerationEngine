@@ -803,7 +803,7 @@ ChatInterface (main)
 const SUGGESTED_PROMPTS = [
   "Generate test cases for user login and authentication",
   "Generate test cases for candidate management and recruitment workflow",
-  "Generate test cases for employee leave management",
+  "Generate test cases for admin user and role management",
   "Generate test cases for dashboard access and navigation",
 ];
 ```
