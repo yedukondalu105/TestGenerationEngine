@@ -4,7 +4,7 @@
 
 **AgenticQAEngine** is an end-to-end agentic QA platform that takes a natural-language feature description and produces enterprise-grade BDD Gherkin scenarios, a Playwright Page Object Model test suite, and executes those tests — all driven by a multi-agent LangGraph pipeline backed by a Graph RAG knowledge layer.
 
-The system targets a **Trade Processing Platform** domain (trade creation, approval, amendment, settlement, cancellation) but is generically structured for any requirements-driven test generation.
+The system targets the **OrangeHRM HRMS** domain (authentication, dashboard, recruitment, employee management, admin management) backed by requirements ingested from Confluence into a Neo4j knowledge graph.
 
 ### User Workflow (4 phases with 3 Human-in-the-Loop Gates)
 
@@ -60,7 +60,9 @@ Human checkpoints allow reviewers to:
 │                                                                          │
 │  Scenario generation                                                     │
 │  • POST /api/generate              — runs LangGraph pipeline             │
+│                                      → 422 if query is off-domain        │
 │  • POST /api/regenerate-scenarios  — re-runs pipeline with feedback      │
+│                                      → 422 if query is off-domain        │
 │                                                                          │
 │  Script generation (no save until approved)                              │
 │  • POST /api/playwright-generate   — generate preview (no save)          │
@@ -96,6 +98,8 @@ Human checkpoints allow reviewers to:
 ┌────────▼──────────────────────────────────────────────────────────────────┐
 │  Knowledge Layer                                                          │
 │  Neo4j Graph DB ──► RequirementGraphEngine (Graph RAG)                    │
+│    171 nodes — OrangeHRM modules (Auth, Dashboard, Recruitment, PIM, Admin)│
+│    _check_domain_relevance() gates retrieval — rejects off-domain queries  │
 │  Confluence ──────► MCP server (requirement pages, test plans)            │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
@@ -116,7 +120,7 @@ Human checkpoints allow reviewers to:
 | AI Pipeline | LLM (scenario) | `gpt-4o-mini` via `langchain_openai.ChatOpenAI` |
 | AI Pipeline | LLM (codegen) | `gpt-4o` for feature/POM/test generation |
 | AI Pipeline | LLM (review) | `gpt-4o-mini` for results review |
-| AI Pipeline | RAG | `RequirementGraphEngine` — Neo4j graph + vector search |
+| AI Pipeline | RAG | `RequirementGraphEngine` — domain relevance guard + Neo4j graph + vector search |
 | Test Codegen | Agent | `playwright_agent.py` — LLM-driven POM codegen |
 | Test Execution | Runner | `pytest-playwright` (Chromium, headless, 600s timeout) |
 | Test Execution | Reporting | `pytest-json-report` → parsed result dict |
@@ -154,6 +158,8 @@ START
 [1] retrieve_context          reads: question
   │                           writes: retrieved_context, run_id
   │                           how: RequirementGraphEngine.retrieve_raw_context()
+  │                           guard: _check_domain_relevance() — raises ValueError (→ HTTP 422)
+  │                                  if query is not relevant to OrangeHRM HRMS modules
   ▼
 [2] requirement_understanding reads: question, retrieved_context
   │                           writes: structured_requirements
@@ -197,6 +203,35 @@ def _should_retry(state: QuestionState) -> str:
 ```
 
 On retry, the loop re-enters at `scenario_generation` — RAG retrieval and requirement/dependency analysis are **not** re-run. The review agent's gap list (`missing_scenarios`, `missing_validation_coverage`, etc.) is injected as an explicit `IMPROVEMENT PASS` supplement into the scenario generation prompt.
+
+### Domain Relevance Guard
+
+Before retrieval runs, `RequirementGraphEngine.retrieve_raw_context()` calls `_check_domain_relevance()` — a fast gpt-4o-mini classifier that checks whether the question is relevant to any of the five OrangeHRM modules in the knowledge base:
+
+```python
+def _check_domain_relevance(self, question: str) -> bool:
+    response = self.llm.invoke(
+        "You are a relevance classifier for an OrangeHRM HR Management System...\n"
+        "Modules: Authentication & Authorization, Dashboard, Recruitment, "
+        "PIM / Employee Management, Admin Management\n"
+        f"Question: {question}\n"
+        "Is this question relevant? Reply ONLY 'YES' or 'NO'."
+    )
+    return response.content.strip().upper().startswith("YES")
+
+def retrieve_raw_context(self, question: str) -> str:
+    if not self._check_domain_relevance(question):
+        raise ValueError(
+            "No relevant requirements found in the knowledge base for this query. "
+            "This system only supports OrangeHRM HRMS modules: Authentication, "
+            "Dashboard, Recruitment, Employee Management, and Admin Management."
+        )
+    return self._retriever(question)
+```
+
+**Why not a vector similarity threshold?** Neo4jVector's cosine scores are compressed into the 0.98–1.0 range for all queries against this corpus (generic OrangeHRM overview documents match everything). The LLM classifier is the only reliable discriminator.
+
+**Error propagation**: `ValueError` bubbles through LangGraph → `asyncio.to_thread` → caught in `backend/main.py` as **HTTP 422** (both `/api/generate` and `/api/regenerate-scenarios`). The frontend's `generateTestCases()` reads `err.detail` and displays the message as an error bubble in the chat — no hallucinated scenarios are ever generated for off-domain queries.
 
 ### Scenario Re-generation (Human Feedback)
 
@@ -763,6 +798,17 @@ ChatInterface (main)
 - **Headless/Headed toggle**: pill button next to Run; default Headless (gray), click to Headed (violet). Sends `{ headless: bool }` in POST body to `/api/test-suites/{id}/run`
 - **Triage gate**: appears below `PlaywrightResultsPanel` automatically when `failed > 0`; collapses when all failures are resolved or skipped
 
+**Suggested Prompts** — Four OrangeHRM-relevant example prompts shown on the empty chat screen:
+```typescript
+const SUGGESTED_PROMPTS = [
+  "Generate test cases for user login and authentication",
+  "Generate test cases for candidate management and recruitment workflow",
+  "Generate test cases for employee leave management",
+  "Generate test cases for dashboard access and navigation",
+];
+```
+Off-domain prompts (e.g. trade management) are blocked by the domain relevance guard and return an error bubble explaining what the system covers.
+
 **LoadingIndicator** — Animated step progression:
 - Steps light up one-by-one every 900ms
 - Pending: gray | Active: blue + pulse ring | Done: green + ✓
@@ -776,7 +822,7 @@ ChatInterface (main)
 | `generatePlaywrightTests(final_output)` | POST `/api/playwright-generate` | Generate scripts preview (no save) |
 | `regenerateScripts(final_output, feedback)` | POST `/api/regenerate-scripts` | Re-gen POM+test with feedback |
 | `saveSuite(previewData)` | POST `/api/playwright-save` | Persist approved suite to disk |
-| `getTestSuites()` | GET `/api/test-suites` | List all saved suites |
+| `getTestSuites()` | GET `/api/test-suites` | List all saved suites; surfaces backend `detail` on failure |
 | `rerunTestSuite(id, headless)` | POST `/api/test-suites/{id}/run` | Re-run a saved suite (headless default) |
 | `getSuiteFiles(id)` | GET `/api/test-suites/{id}/files` | Read file contents for suite |
 | `deleteSuite(id)` | DELETE `/api/test-suites/{id}` | Delete suite files + manifest entry |
@@ -818,7 +864,7 @@ export async function GET(req: NextRequest) {
 
 ## Agent Contribution Analysis
 
-Empirical analysis based on run `20260521_221500_api` (Trade Amendment, 89.57s total, single pass).
+Empirical analysis based on run `20260521_221500_api` (User Login and Authentication, 89.57s total, single pass). Note: "Trade Amendment" prompts are now rejected at the domain relevance guard before any pipeline node runs.
 
 ### Timing and Output Sizes
 
