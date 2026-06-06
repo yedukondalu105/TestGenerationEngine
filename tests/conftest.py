@@ -26,8 +26,8 @@ def test_data() -> dict:
 
 @pytest.fixture(autouse=True)
 def set_timeouts(page):
-    page.set_default_navigation_timeout(60_000)
-    page.set_default_timeout(60_000)
+    page.set_default_navigation_timeout(30_000)
+    page.set_default_timeout(15_000)
 
 
 # ─── Failure artifact capture ─────────────────────────────────────────────────

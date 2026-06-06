@@ -322,7 +322,7 @@ def run_test_file(test_file: Path, headed: bool = False) -> dict:
         f"--json-report-file={report_file}",
         "--tb=short", "-v",
         "--browser", "chromium",
-        "--timeout=90",  # per-test hard cap; Playwright action timeout is 60s
+        "--timeout=60",  # per-test hard cap; Playwright action timeout is 15s
     ]
     if headed:
         cmd.append("--headed")
@@ -331,7 +331,7 @@ def run_test_file(test_file: Path, headed: bool = False) -> dict:
             cmd,
             capture_output=True,
             text=True,
-            timeout=600,
+            timeout=1200,
             cwd=str(TESTS_DIR),
         )
         stdout = proc.stdout or ""
@@ -364,7 +364,7 @@ def run_test_file(test_file: Path, headed: bool = False) -> dict:
         else:
             results["execution_error"] = "No report generated.\n" + results["raw_output"][:1000]
     except subprocess.TimeoutExpired:
-        results["execution_error"] = "Timed out after 10 minutes."
+        results["execution_error"] = "Timed out after 20 minutes."
     except Exception as e:
         results["execution_error"] = str(e)
 
