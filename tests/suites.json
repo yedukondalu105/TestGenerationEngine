@@ -84,6 +84,23 @@
         "total": 30,
         "overall_status": "Unknown"
       }
+    },
+    {
+      "id": "795728cc",
+      "use_case": "User and Role Management",
+      "slug": "user_and_role_management",
+      "created_at": "2026-06-06T06:42:58.382525",
+      "feature_file": "features/user_and_role_management.feature",
+      "page_file": "pages/user_and_role_management_page.py",
+      "test_file": "test_suites/test_user_and_role_management.py",
+      "scenario_count": 35,
+      "last_run_at": "2026-06-06T09:12:14.984377",
+      "last_results": {
+        "passed": 7,
+        "failed": 23,
+        "total": 35,
+        "overall_status": "Unknown"
+      }
     }
   ]
 }

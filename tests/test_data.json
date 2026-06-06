@@ -17,6 +17,28 @@
       "invalid_format": "!nv@l!d",
       "max_length_username": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       "max_length_password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "user_and_role_management": {
+      "valid_username": "Admin",
+      "invalid_username": "existing_user",
+      "empty_value": "",
+      "invalid_format": "!nv@l!d",
+      "max_length_username": "maximum allowed username length",
+      "max_length_password": "maximum allowed password length",
+      "short_password": "weak password",
+      "non_existent_employee": "non-existent employee",
+      "non_existent_user": "non-existent user",
+      "existing_user": "existing_user",
+      "error_user_not_found": "USER_NOT_FOUND",
+      "error_username_taken": "USERNAME_TAKEN",
+      "error_invalid_password": "INVALID_PASSWORD",
+      "error_session_expired": "SESSION_EXPIRED",
+      "error_missing_fields": "MISSING_FIELDS",
+      "error_user_already_enabled": "USER_ALREADY_ENABLED",
+      "error_missing_employee_name": "MISSING_EMPLOYEE_NAME",
+      "error_missing_username": "MISSING_USERNAME",
+      "error_weak_password": "WEAK_PASSWORD",
+      "error_unauthorized_access": "UNAUTHORIZED_ACCESS"
     }
   }
 }
