@@ -945,21 +945,33 @@ function TriageGate({
                   </p>
                 )}
 
-                {/* Unvalidated fix — diff is shown but auto-apply is unsafe */}
-                {!isDefect && item.proposed_fix && item.fix_validated === false && !isApplied && (
+                {/* Unvalidated fix — diff is shown; offer fuzzy apply + clipboard copy */}
+                {!isDefect && item.proposed_fix && item.fix_validated === false && !isApplied && !isApplyingThis && (
                   <div className="space-y-1.5">
                     <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1.5 rounded">
-                      ⚠ Could not locate this exact code block in the file — use the diff above as a reference and apply manually.
+                      ⚠ Could not locate this exact code block — the backend will attempt a fuzzy match. Use "Copy Diff" if you prefer to apply manually.
                     </p>
-                    <button
-                      onClick={() => {
-                        const fix = item.proposed_fix!;
-                        navigator.clipboard.writeText(`--- ${fix.file}\n- ${fix.old_code}\n+ ${fix.new_code}`);
-                      }}
-                      className="w-full flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg border font-semibold transition-colors bg-gray-100 hover:bg-gray-200 text-gray-700 border-gray-300"
-                    >
-                      <Copy className="w-4 h-4" /> Copy Diff to Clipboard
-                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => applyOne(item)}
+                        disabled={isApplyingThis}
+                        className="flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg border font-semibold transition-colors bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-white border-amber-500"
+                      >
+                        {isApplyingThis
+                          ? <><Loader2 className="w-4 h-4 animate-spin" /> Applying…</>
+                          : <><CheckCircle2 className="w-4 h-4" /> Try Apply (Fuzzy)</>
+                        }
+                      </button>
+                      <button
+                        onClick={() => {
+                          const fix = item.proposed_fix!;
+                          navigator.clipboard.writeText(`--- ${fix.file}\n- ${fix.old_code}\n+ ${fix.new_code}`);
+                        }}
+                        className="flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg border font-semibold transition-colors bg-gray-100 hover:bg-gray-200 text-gray-700 border-gray-300"
+                      >
+                        <Copy className="w-4 h-4" /> Copy Diff
+                      </button>
+                    </div>
                   </div>
                 )}
 

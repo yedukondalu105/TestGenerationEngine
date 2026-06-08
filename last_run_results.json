@@ -1,0 +1,220 @@
+﻿{
+    "passed":  2,
+    "failed":  28,
+    "error":  0,
+    "total":  35,
+    "tests":  [
+                  {
+                      "name":  "test_create_new_user_with_valid_details[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:11: in test_create_new_user_with_valid_details\n    obj.assert_success_toast()\npages\\user_and_role_management_page.py:71: in assert_success_toast\n    expect(self.toast_success).to_be_visible()\nE   AssertionError: Locator expected to be visible\nE   Actual value: - complementary:\nE     - navigation \"Sidepanel\":\nE       - link \"client brand banner\":\nE         - /url: https://www.orangehrm.com/\nE         - img \"client brand banner\"\nE       - textbox \"Searc"
+                  },
+                  {
+                      "name":  "test_assign_role_during_user_creation[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:19: in test_assign_role_during_user_creation\n    obj.assert_success_toast()\npages\\user_and_role_management_page.py:71: in assert_success_toast\n    expect(self.toast_success).to_be_visible()\nE   AssertionError: Locator expected to be visible\nE   Actual value: - complementary:\nE     - navigation \"Sidepanel\":\nE       - link \"client brand banner\":\nE         - /url: https://www.orangehrm.com/\nE         - img \"client brand banner\"\nE       - textbox \"Search\""
+                  },
+                  {
+                      "name":  "test_search_existing_users_by_username[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:27: in test_search_existing_users_by_username\n    obj.assert_success_toast()\npages\\user_and_role_management_page.py:71: in assert_success_toast\n    expect(self.toast_success).to_be_visible()\nE   AssertionError: Locator expected to be visible\nE   Actual value: - complementary:\nE     - navigation \"Sidepanel\":\nE       - link \"client brand banner\":\nE         - /url: https://www.orangehrm.com/\nE         - img \"client brand banner\"\nE       - textbox \"Search"
+                  },
+                  {
+                      "name":  "test_search_users_by_role[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:35: in test_search_users_by_role\n    obj.assert_success_toast()\npages\\user_and_role_management_page.py:71: in assert_success_toast\n    expect(self.toast_success).to_be_visible()\nE   AssertionError: Locator expected to be visible\nE   Actual value: - complementary:\nE     - navigation \"Sidepanel\":\nE       - link \"client brand banner\":\nE         - /url: https://www.orangehrm.com/\nE         - img \"client brand banner\"\nE       - textbox \"Search\"\nE       - b"
+                  },
+                  {
+                      "name":  "test_search_users_by_status[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:43: in test_search_users_by_status\n    obj.assert_success_toast()\npages\\user_and_role_management_page.py:71: in assert_success_toast\n    expect(self.toast_success).to_be_visible()\nE   AssertionError: Locator expected to be visible\nE   Actual value: - complementary:\nE     - navigation \"Sidepanel\":\nE       - link \"client brand banner\":\nE         - /url: https://www.orangehrm.com/\nE         - img \"client brand banner\"\nE       - textbox \"Search\"\nE       -"
+                  },
+                  {
+                      "name":  "test_disable_a_user[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:50: in test_disable_a_user\n    obj.edit_record(0, new_status=\"Disabled\")\npages\\user_and_role_management_page.py:60: in edit_record\n    self.status_dropdown.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwright\\_impl\\_locator.py:163: in click\n    return await self._frame._click(self._selector, strict=True, **params)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"
+                  },
+                  {
+                      "name":  "test_access_admin_module_after_authentication[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:58: in test_access_admin_module_after_authentication\n    obj.assert_on_dashboard()\npages\\user_and_role_management_page.py:80: in assert_on_dashboard\n    expect(self.page).to_have_url(re.compile(r\".*/dashboard/index\"))\nE   AssertionError: Page URL expected to be \u0027re.compile(\u0027.*/dashboard/index\u0027)\u0027\nE   Actual value: https://opensource-demo.orangehrmlive.com/web/index.php/admin/viewSystemUsers \nE   Call log:\nE     - Expect \"to_have_url\" with timeout 5000m"
+                  },
+                  {
+                      "name":  "test_fail_user_creation_if_employee_does_not_exist[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:65: in test_fail_user_creation_if_employee_does_not_exist\n    obj.add_record(td[\"valid_username\"], td[\"max_length_password\"], td[\"max_length_password\"], td[\"non_existent_employee\"], \"Admin\", \"Enabled\")\npages\\user_and_role_management_page.py:32: in add_record\n    self.page.locator(\".oxd-autocomplete-option\", has_text=employee_name).first.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\si"
+                  },
+                  {
+                      "name":  "test_fail_creation_for_duplicate_username[chromium]",
+                      "outcome":  "passed",
+                      "duration":  0,
+                      "message":  ""
+                  },
+                  {
+                      "name":  "test_fail_creation_for_invalid_password[chromium]",
+                      "outcome":  "passed",
+                      "duration":  0,
+                      "message":  ""
+                  },
+                  {
+                      "name":  "test_reject_access_to_admin_module_without_authentication[chromium]",
+                      "outcome":  "skipped",
+                      "duration":  0,
+                      "message":  "(\u0027D:\\\\Architect\\\\TestCasesGenerator\\\\tests\\\\test_suites\\\\test_user_and_role_management.py\u0027, 84, \u0027Skipped: Session expiry not available\u0027)"
+                  },
+                  {
+                      "name":  "test_fail_disabling_a_user_that_does_not_exist[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:93: in test_fail_disabling_a_user_that_does_not_exist\n    obj.delete_record(999)  # Assuming 999 is a non-existent index\n    ^^^^^^^^^^^^^^^^^^^^^^\npages\\user_and_role_management_page.py:66: in delete_record\n    self.page.locator(\".oxd-table-cell-actions\").nth(row_index).click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwright\\_impl\\_locator.py:163: in click\n    return a"
+                  },
+                  {
+                      "name":  "test_fail_user_creation_for_missing_mandatory_fields[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:101: in test_fail_user_creation_for_missing_mandatory_fields\n    obj.add_record(td[\"empty_value\"], td[\"empty_value\"], td[\"empty_value\"], td[\"empty_value\"], \"Admin\", \"Enabled\")\npages\\user_and_role_management_page.py:32: in add_record\n    self.page.locator(\".oxd-autocomplete-option\", has_text=employee_name).first.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwright\\_im"
+                  },
+                  {
+                      "name":  "test_fail_enabling_a_user_that_is_already_disabled[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:109: in test_fail_enabling_a_user_that_is_already_disabled\n    obj.edit_record(0, new_status=\"Enabled\")\npages\\user_and_role_management_page.py:60: in edit_record\n    self.status_dropdown.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwright\\_impl\\_locator.py:163: in click\n    return await self._frame._click(self._selector, strict=True, **params)\n           ^^^^^^^^^^^"
+                  },
+                  {
+                      "name":  "test_error_for_empty_employee_name[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:117: in test_error_for_empty_employee_name\n    obj.add_record(td[\"valid_username\"], td[\"max_length_password\"], td[\"max_length_password\"], td[\"empty_value\"], \"Admin\", \"Enabled\")\npages\\user_and_role_management_page.py:32: in add_record\n    self.page.locator(\".oxd-autocomplete-option\", has_text=employee_name).first.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwright\\_i"
+                  },
+                  {
+                      "name":  "test_error_for_empty_username[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:125: in test_error_for_empty_username\n    obj.add_record(td[\"empty_value\"], td[\"max_length_password\"], td[\"max_length_password\"], \"John Doe\", \"Admin\", \"Enabled\")\npages\\user_and_role_management_page.py:32: in add_record\n    self.page.locator(\".oxd-autocomplete-option\", has_text=employee_name).first.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwright\\_impl\\_locator.py"
+                  },
+                  {
+                      "name":  "test_error_for_password_not_meeting_security_policies[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:133: in test_error_for_password_not_meeting_security_policies\n    obj.add_record(td[\"valid_username\"], td[\"short_password\"], td[\"short_password\"], \"John Doe\", \"Admin\", \"Enabled\")\npages\\user_and_role_management_page.py:32: in add_record\n    self.page.locator(\".oxd-autocomplete-option\", has_text=employee_name).first.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwright\\"
+                  },
+                  {
+                      "name":  "test_error_for_username_that_is_not_unique[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:141: in test_error_for_username_that_is_not_unique\n    obj.add_record(td[\"existing_user\"], td[\"max_length_password\"], td[\"max_length_password\"], \"John Doe\", \"Admin\", \"Enabled\")\npages\\user_and_role_management_page.py:32: in add_record\n    self.page.locator(\".oxd-autocomplete-option\", has_text=employee_name).first.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwright\\_i"
+                  },
+                  {
+                      "name":  "test_reject_access_to_admin_module_for_non_admin_user[chromium]",
+                      "outcome":  "skipped",
+                      "duration":  0,
+                      "message":  "(\u0027D:\\\\Architect\\\\TestCasesGenerator\\\\tests\\\\test_suites\\\\test_user_and_role_management.py\u0027, 144, \u0027Skipped: Non-admin user access not available\u0027)"
+                  },
+                  {
+                      "name":  "test_reject_access_to_admin_module_for_unauthenticated_user[chromium]",
+                      "outcome":  "skipped",
+                      "duration":  0,
+                      "message":  "(\u0027D:\\\\Architect\\\\TestCasesGenerator\\\\tests\\\\test_suites\\\\test_user_and_role_management.py\u0027, 148, \u0027Skipped: Session expiry not available\u0027)"
+                  },
+                  {
+                      "name":  "test_fail_user_creation_if_authentication_is_not_completed[chromium]",
+                      "outcome":  "skipped",
+                      "duration":  0,
+                      "message":  "(\u0027D:\\\\Architect\\\\TestCasesGenerator\\\\tests\\\\test_suites\\\\test_user_and_role_management.py\u0027, 152, \u0027Skipped: Session expiry not available\u0027)"
+                  },
+                  {
+                      "name":  "test_fail_role_assignment_if_the_user_does_not_exist[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:161: in test_fail_role_assignment_if_the_user_does_not_exist\n    obj.edit_record(999, new_role=\"Admin\")  # Assuming 999 is a non-existent index\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\npages\\user_and_role_management_page.py:53: in edit_record\n    self.page.locator(\".oxd-table-cell-actions .oxd-icon-button\").nth(row_index).click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\p"
+                  },
+                  {
+                      "name":  "test_transition_from_active_to_disabled_state_succeeds[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:169: in test_transition_from_active_to_disabled_state_succeeds\n    obj.edit_record(0, new_status=\"Disabled\")\npages\\user_and_role_management_page.py:62: in edit_record\n    self.save_button.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwright\\_impl\\_locator.py:163: in click\n    return await self._frame._click(self._selector, strict=True, **params)\n           ^^^^^^^^^^"
+                  },
+                  {
+                      "name":  "test_transition_from_disabled_to_active_state_is_blocked[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:177: in test_transition_from_disabled_to_active_state_is_blocked\n    obj.edit_record(0, new_status=\"Enabled\")\npages\\user_and_role_management_page.py:62: in edit_record\n    self.save_button.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwright\\_impl\\_locator.py:163: in click\n    return await self._frame._click(self._selector, strict=True, **params)\n           ^^^^^^^^^"
+                  },
+                  {
+                      "name":  "test_user_creation_with_maximum_allowed_username_length[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:185: in test_user_creation_with_maximum_allowed_username_length\n    obj.add_record(td[\"max_length_username\"], td[\"max_length_password\"], td[\"max_length_password\"], \"John Doe\", \"Admin\", \"Enabled\")\npages\\user_and_role_management_page.py:32: in add_record\n    self.page.locator(\".oxd-autocomplete-option\", has_text=employee_name).first.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-pac"
+                  },
+                  {
+                      "name":  "test_user_creation_with_minimum_allowed_password_length[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:193: in test_user_creation_with_minimum_allowed_password_length\n    obj.add_record(td[\"valid_username\"], td[\"short_password\"], td[\"short_password\"], \"John Doe\", \"Admin\", \"Enabled\")\npages\\user_and_role_management_page.py:32: in add_record\n    self.page.locator(\".oxd-autocomplete-option\", has_text=employee_name).first.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwrigh"
+                  },
+                  {
+                      "name":  "test_user_creation_with_maximum_allowed_password_length[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:201: in test_user_creation_with_maximum_allowed_password_length\n    obj.add_record(td[\"valid_username\"], td[\"max_length_password\"], td[\"max_length_password\"], \"John Doe\", \"Admin\", \"Enabled\")\npages\\user_and_role_management_page.py:32: in add_record\n    self.page.locator(\".oxd-autocomplete-option\", has_text=employee_name).first.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages"
+                  },
+                  {
+                      "name":  "test_audit_log_entry_created_for_user_creation[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:209: in test_audit_log_entry_created_for_user_creation\n    obj.add_record(td[\"valid_username\"], td[\"max_length_password\"], td[\"max_length_password\"], \"John Doe\", \"Admin\", \"Enabled\")\npages\\user_and_role_management_page.py:32: in add_record\n    self.page.locator(\".oxd-autocomplete-option\", has_text=employee_name).first.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwrig"
+                  },
+                  {
+                      "name":  "test_audit_log_entry_created_for_role_assignment[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:217: in test_audit_log_entry_created_for_role_assignment\n    obj.edit_record(0, new_role=\"Admin\")\npages\\user_and_role_management_page.py:62: in edit_record\n    self.save_button.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwright\\_impl\\_locator.py:163: in click\n    return await self._frame._click(self._selector, strict=True, **params)\n           ^^^^^^^^^^^^^^^^^^^^^"
+                  },
+                  {
+                      "name":  "test_handle_username_taken_error_for_duplicate_username[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:225: in test_handle_username_taken_error_for_duplicate_username\n    obj.add_record(td[\"existing_user\"], td[\"max_length_password\"], td[\"max_length_password\"], \"John Doe\", \"Admin\", \"Enabled\")\npages\\user_and_role_management_page.py:32: in add_record\n    self.page.locator(\".oxd-autocomplete-option\", has_text=employee_name).first.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\"
+                  },
+                  {
+                      "name":  "test_handle_invalid_password_error_for_weak_password[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:231: in test_handle_invalid_password_error_for_weak_password\n    obj.login()\npages\\base_page.py:26: in login\n    self.goto_app()\npages\\base_page.py:20: in goto_app\n    self.page.goto(self.APP_URL)\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:9612: in goto\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwright\\_impl\\_page.py:557: in goto\n    return await self._main_frame.goto(**locals_to_params(locals()))\n           ^^^^^^^^^^^^^^^^^^^^^"
+                  },
+                  {
+                      "name":  "test_handle_unauthorized_access_error_for_non_admin_access_attempt[chromium]",
+                      "outcome":  "skipped",
+                      "duration":  0,
+                      "message":  "(\u0027D:\\\\Architect\\\\TestCasesGenerator\\\\tests\\\\test_suites\\\\test_user_and_role_management.py\u0027, 236, \u0027Skipped: Non-admin user access not available\u0027)"
+                  },
+                  {
+                      "name":  "test_verify_user_creation_operation_is_logged_in_audit[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:243: in test_verify_user_creation_operation_is_logged_in_audit\n    obj.login()\npages\\base_page.py:26: in login\n    self.goto_app()\npages\\base_page.py:20: in goto_app\n    self.page.goto(self.APP_URL)\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:9612: in goto\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwright\\_impl\\_page.py:557: in goto\n    return await self._main_frame.goto(**locals_to_params(locals()))\n           ^^^^^^^^^^^^^^^^^^^"
+                  },
+                  {
+                      "name":  "test_verify_role_assignment_operation_is_logged_in_audit[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:251: in test_verify_role_assignment_operation_is_logged_in_audit\n    obj.login()\npages\\base_page.py:26: in login\n    self.goto_app()\npages\\base_page.py:20: in goto_app\n    self.page.goto(self.APP_URL)\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:9612: in goto\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwright\\_impl\\_page.py:557: in goto\n    return await self._main_frame.goto(**locals_to_params(locals()))\n           ^^^^^^^^^^^^^^^^^"
+                  },
+                  {
+                      "name":  "test_verify_audit_log_captures_all_changes_made_to_user_roles[chromium]",
+                      "outcome":  "failed",
+                      "duration":  0,
+                      "message":  "test_suites\\test_user_and_role_management.py:261: in test_verify_audit_log_captures_all_changes_made_to_user_roles\n    obj.edit_record(0, new_role=\"Admin\")\npages\\user_and_role_management_page.py:62: in edit_record\n    self.save_button.click()\n..\\.venv\\Lib\\site-packages\\playwright\\sync_api\\_generated.py:17422: in click\n    self._sync(\n..\\.venv\\Lib\\site-packages\\playwright\\_impl\\_locator.py:163: in click\n    return await self._frame._click(self._selector, strict=True, **params)\n           ^^^^^^^^"
+                  }
+              ],
+    "raw_output":  "est_assign_role_during_user_creation[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_search_existing_users_by_username[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_search_users_by_role[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_search_users_by_status[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_disable_a_user[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_access_admin_module_after_authentication[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_fail_user_creation_if_employee_does_not_exist[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_fail_disabling_a_user_that_does_not_exist[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_fail_user_creation_for_missing_mandatory_fields[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_fail_enabling_a_user_that_is_already_disabled[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_error_for_empty_employee_name[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_error_for_empty_username[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_error_for_password_not_meeting_security_policies[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_error_for_username_that_is_not_unique[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_fail_role_assignment_if_the_user_does_not_exist[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_transition_from_active_to_disabled_state_succeeds[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_transition_from_disabled_to_active_state_is_blocked[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_user_creation_with_maximum_allowed_username_length[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_user_creation_with_minimum_allowed_password_length[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_user_creation_with_maximum_allowed_password_length[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_audit_log_entry_created_for_user_creation[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_audit_log_entry_created_for_role_assignment[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_handle_username_taken_error_for_duplicate_username[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_handle_invalid_password_error_for_weak_password[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_verify_user_creation_operation_is_logged_in_audit[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_verify_role_assignment_operation_is_logged_in_audit[chromium]\nFAILED test_suites/test_user_and_role_management.py::test_verify_audit_log_captures_all_changes_made_to_user_roles[chromium]\n============ 28 failed, 2 passed, 5 skipped in 1048.20s (0:17:28) =============\n",
+    "execution_error":  null
+}

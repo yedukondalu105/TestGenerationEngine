@@ -94,10 +94,10 @@
       "page_file": "pages/user_and_role_management_page.py",
       "test_file": "test_suites/test_user_and_role_management.py",
       "scenario_count": 35,
-      "last_run_at": "2026-06-06T09:12:14.984377",
+      "last_run_at": "2026-06-08T21:57:29.229514",
       "last_results": {
-        "passed": 7,
-        "failed": 23,
+        "passed": 0,
+        "failed": 30,
         "total": 35,
         "overall_status": "Unknown"
       }

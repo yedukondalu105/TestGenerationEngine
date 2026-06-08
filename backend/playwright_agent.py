@@ -848,7 +848,7 @@ def _validate_triage_fixes(triage_items: list, pom_content: str, test_content: s
             item["fix_validated"] = True
             result.append(item)
             continue
-        actual = _find_actual_block(content, old_code)
+        actual = _find_actual_block(content, old_code, threshold=0.65)
         if actual is not None:
             item = dict(item)
             item["proposed_fix"] = dict(fix)
@@ -926,6 +926,15 @@ def _apply_code_fix(content: str, old_code: str, new_code: str) -> tuple[str, bo
 
             result = c_lines[:i] + indented_new + c_lines[i + n :]
             return "\n".join(result), True
+
+    # Pass 4: fuzzy block replacement — find best matching block then do an
+    # indentation-aware swap (covers cases where fix_validated=False slips through
+    # or the LLM drifted slightly beyond what passes 1-3 tolerate).
+    actual_block = _find_actual_block(content, old_code, threshold=0.5)
+    if actual_block is not None:
+        applied, ok = _apply_code_fix(content, actual_block, new_code)
+        if ok:
+            return applied, True
 
     return content, False
 
