@@ -18,7 +18,7 @@ class CandidateManagementPage(BasePage):
     def navigate(self):
         self.navigate_to("Recruitment")
         self.page.get_by_role("link", name="Candidates").first.click()
-        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_load_state("domcontentloaded")
 
     def add_candidate(self, first_name: str, last_name: str, email: str, resume_path: str):
         self.add_candidate_button.click()
@@ -27,12 +27,12 @@ class CandidateManagementPage(BasePage):
         self.email_input.fill(email)
         self.resume_upload_input.set_input_files(resume_path)
         self.save_button.click()
-        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_load_state("domcontentloaded")
 
     def upload_resume(self, resume_path: str):
         self.resume_upload_input.set_input_files(resume_path)
         self.save_button.click()
-        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_load_state("domcontentloaded")
 
     def assert_success_toast(self):
         expect(self.success_toast).to_be_visible()

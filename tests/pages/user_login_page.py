@@ -15,7 +15,7 @@ class UserLoginPage(BasePage):
         self.goto_app()
 
     def navigate(self):
-        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_load_state("domcontentloaded")
 
     def provide_username(self, text: str):
         self.username_input.fill(text)
@@ -25,7 +25,7 @@ class UserLoginPage(BasePage):
 
     def attempt_login(self):
         self.login_button.click()
-        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_load_state("domcontentloaded")
 
     def assert_on_dashboard(self):
         expect(self.page).to_have_url(re.compile(r".*/dashboard/index"))

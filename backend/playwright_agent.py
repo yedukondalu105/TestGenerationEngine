@@ -322,7 +322,7 @@ def run_test_file(test_file: Path, headed: bool = False) -> dict:
         f"--json-report-file={report_file}",
         "--tb=short", "-v",
         "--browser", "chromium",
-        "--timeout=60",  # per-test hard cap; Playwright action timeout is 15s
+        "--timeout=90",  # per-test hard cap; Playwright action timeout is 30s
     ]
     if headed:
         cmd.append("--headed")

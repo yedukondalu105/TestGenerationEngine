@@ -21,7 +21,6 @@ class UserAndRoleManagementPage(BasePage):
 
     def navigate(self):
         self.navigate_to("Admin")
-        self.page.wait_for_load_state("networkidle")
 
     def add_record(self, username, password, confirm_password, employee_name, role, status):
         self.add_user_button.click()
@@ -35,7 +34,7 @@ class UserAndRoleManagementPage(BasePage):
         self.status_dropdown.click()
         self.page.get_by_role("option", name=status).click()
         self.save_button.click()
-        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_load_state("domcontentloaded")
 
     def search(self, username=None, role=None, status=None):
         if username:
@@ -47,7 +46,7 @@ class UserAndRoleManagementPage(BasePage):
             self.status_dropdown.click()
             self.page.get_by_role("option", name=status).click()
         self.search_button.click()
-        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_load_state("domcontentloaded")
 
     def edit_record(self, row_index, new_username=None, new_role=None, new_status=None):
         self.page.locator(".oxd-table-cell-actions .oxd-icon-button").nth(row_index).click()
@@ -60,12 +59,12 @@ class UserAndRoleManagementPage(BasePage):
             self.status_dropdown.click()
             self.page.get_by_role("option", name=new_status).click()
         self.save_button.click()
-        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_load_state("domcontentloaded")
 
     def delete_record(self, row_index):
         self.page.locator(".oxd-table-cell-actions").nth(row_index).click()
         self.page.get_by_role("button", name="Yes, Delete").click()
-        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_load_state("domcontentloaded")
 
     def assert_success_toast(self):
         expect(self.toast_success).to_be_visible()

@@ -17,8 +17,7 @@ class BasePage:
         self.page = page
 
     def goto_app(self) -> None:
-        self.page.goto(self.APP_URL)
-        self.page.wait_for_load_state("networkidle")
+        self.page.goto(self.APP_URL, wait_until="domcontentloaded")
 
     def login(self, username: str = _DEFAULT_USERNAME, password: str = _DEFAULT_PASSWORD) -> None:
         """Full login: navigate → fill credentials → submit → wait for dashboard.
@@ -31,4 +30,4 @@ class BasePage:
 
     def navigate_to(self, menu_item: str) -> None:
         self.page.get_by_role("link", name=menu_item).first.click()
-        self.page.wait_for_load_state("networkidle")
+        self.page.wait_for_load_state("domcontentloaded")
