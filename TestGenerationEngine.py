@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
+from langgraph.checkpoint.memory import MemorySaver
 
 load_dotenv(override=True)
 
@@ -138,6 +139,7 @@ class QuestionState(TypedDict):
     review_feedback: str
     final_output: str
     retry_count: int
+    human_approved: bool  # set True to skip auto-retry and proceed to END
 
 
 llm          = ChatOpenAI(model="gpt-4o-mini", temperature=0.4)  # requirement + dependency agents
@@ -496,6 +498,9 @@ def review_agent(state: QuestionState) -> dict:
 
 
 def _should_retry(state: QuestionState) -> str:
+    # Human explicitly approved — skip auto-retry regardless of review status
+    if state.get("human_approved", False):
+        return "end"
     if state.get("retry_count", 0) >= 2:
         return "end"
     try:
@@ -505,6 +510,11 @@ def _should_retry(state: QuestionState) -> str:
     except Exception:
         pass
     return "end"
+
+
+# Shared in-memory checkpointer — persists state across /api/generate and
+# /api/resume-with-feedback within the same server process lifetime.
+_checkpointer = MemorySaver()
 
 
 # BUILD GRAPH
@@ -530,7 +540,9 @@ def build_question_agent_graph():
         {"retry": "scenario_generation", "end": END},
     )
 
-    return graph.compile()
+    # interrupt_after="review_agent" pauses the graph after every review pass so
+    # a human can approve or provide feedback before the pipeline continues.
+    return graph.compile(checkpointer=_checkpointer, interrupt_after=["review_agent"])
 
 
 if __name__ == "__main__":

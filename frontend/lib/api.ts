@@ -1,4 +1,5 @@
 export interface GenerateResponse {
+  thread_id: string;
   question: string;
   final_output: string;
   review_feedback: string;
@@ -182,6 +183,23 @@ export async function regenerateScenarios(question: string, feedback: string): P
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error((err as { detail?: string }).detail || `Regeneration failed (${res.status})`);
+  }
+  return res.json();
+}
+
+export async function resumeWithFeedback(
+  threadId: string,
+  feedback: string,
+  question: string,
+): Promise<GenerateResponse> {
+  const res = await fetch("/api/resume-with-feedback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ thread_id: threadId, feedback, question }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `Resume failed (${res.status})`);
   }
   return res.json();
 }

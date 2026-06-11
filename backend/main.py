@@ -2,6 +2,7 @@ import sys
 import os
 import io
 import json
+import uuid
 import asyncio
 import traceback
 
@@ -99,27 +100,7 @@ class SuiteUpdateScriptsRequest(BaseModel):
     test_content: str
 
 
-@app.post("/api/generate")
-async def generate(request: GenerateRequest):
-    initial_state = {
-        "question": request.question,
-        "retrieved_context": "",
-        "structured_requirements": "",
-        "dependency_mapping": "",
-        "generated_scenarios": "",
-        "generated_gherkin": "",
-        "review_feedback": "",
-        "final_output": "",
-        "retry_count": 0,
-    }
-
-    try:
-        result = await asyncio.to_thread(agent.invoke, initial_state)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+def _parse_gherkin_meta(result: dict) -> tuple[int, str]:
     scenario_count = 0
     use_case = ""
     try:
@@ -130,19 +111,87 @@ async def generate(request: GenerateRequest):
         use_case = gherkin_data.get("use_case", "")
     except Exception:
         pass
+    return scenario_count, use_case
 
+
+def _build_response(thread_id: str, question: str, result: dict) -> dict:
+    scenario_count, use_case = _parse_gherkin_meta(result)
     return {
-        "question": request.question,
+        "thread_id": thread_id,
+        "question": question,
         "final_output": result.get("final_output", ""),
         "review_feedback": result.get("review_feedback", ""),
         "generated_scenarios": result.get("generated_scenarios", ""),
         "scenario_count": scenario_count,
         "use_case": use_case,
-        # Agent outputs not used by Excel but exposed for ZIP download
         "retrieved_context": result.get("retrieved_context", ""),
         "structured_requirements": result.get("structured_requirements", ""),
         "dependency_mapping": result.get("dependency_mapping", ""),
     }
+
+
+@app.post("/api/generate")
+async def generate(request: GenerateRequest):
+    thread_id = str(uuid.uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
+    initial_state = {
+        "question": request.question,
+        "retrieved_context": "",
+        "structured_requirements": "",
+        "dependency_mapping": "",
+        "generated_scenarios": "",
+        "generated_gherkin": "",
+        "review_feedback": "",
+        "final_output": "",
+        "retry_count": 0,
+        "human_approved": False,
+    }
+
+    try:
+        result = await asyncio.to_thread(agent.invoke, initial_state, config)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return _build_response(thread_id, request.question, result)
+
+
+class ResumeWithFeedbackRequest(BaseModel):
+    thread_id: str
+    feedback: str
+    question: str
+
+
+@app.post("/api/resume-with-feedback")
+async def resume_with_feedback(request: ResumeWithFeedbackRequest):
+    """Resume the paused LangGraph from scenario_generation (Node 4) with human feedback.
+
+    This skips RAG retrieval, requirement understanding, and dependency mapping —
+    only scenario_generation → gherkin_generation → review_agent re-run.
+    """
+    config = {"configurable": {"thread_id": request.thread_id}}
+
+    # Inject human feedback as a "missing_scenarios" hint so scenario_generation
+    # picks it up via the retry_supplement logic (requires retry_count > 0).
+    feedback_update = {
+        "review_feedback": json.dumps({
+            "overall_review_status": "Needs Improvement",
+            "missing_scenarios": [request.feedback],
+        }),
+        "retry_count": 1,      # >0 so scenario_generation injects the hint
+        "human_approved": False,
+    }
+
+    try:
+        await asyncio.to_thread(agent.update_state, config, feedback_update)
+        result = await asyncio.to_thread(agent.invoke, None, config)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return _build_response(request.thread_id, request.question, result)
 
 
 @app.post("/api/download")

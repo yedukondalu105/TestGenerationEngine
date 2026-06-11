@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import {
   generateTestCases, downloadExcel, downloadZip,
-  generatePlaywrightTests, saveSuite, regenerateScenarios, regenerateScripts,
+  generatePlaywrightTests, saveSuite, regenerateScenarios, resumeWithFeedback, regenerateScripts,
   getTestSuites, rerunTestSuite, getSuiteFiles, deleteSuite,
   regenerateSuiteScripts, updateSuiteScripts,
   triageFailures, applyFix, runSingleTest,
@@ -1604,8 +1604,16 @@ function AssistantCard({
     setStageError(null);
     setStage("regenerating_scenarios");
     try {
-      const result = await regenerateScenarios(message.data.question, feedback);
+      // Use HITL resume when thread_id is available (resumes from Node 4 only —
+      // skips RAG + requirement understanding + dependency mapping).
+      // Falls back to full re-run for responses generated before this feature.
+      const result = message.data.thread_id
+        ? await resumeWithFeedback(message.data.thread_id, feedback, message.data.question)
+        : await regenerateScenarios(message.data.question, feedback);
       setLocalFinalOutput(result.final_output);
+      if (result.thread_id) {
+        message.data.thread_id = result.thread_id;
+      }
       setStage("scenario_review");
     } catch (err: unknown) {
       setStageError(err instanceof Error ? err.message : "Re-generation failed");
