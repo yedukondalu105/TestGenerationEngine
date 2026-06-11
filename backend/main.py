@@ -172,6 +172,21 @@ async def resume_with_feedback(request: ResumeWithFeedbackRequest):
     """
     config = {"configurable": {"thread_id": request.thread_id}}
 
+    # Guard: if the thread is unknown (server restarted / MemorySaver cleared),
+    # get_state returns an empty dict. Fail fast with a clear message so the
+    # frontend can fall back to a full re-generate rather than running from blank state.
+    try:
+        snapshot = await asyncio.to_thread(agent.get_state, config)
+        if not snapshot.values:
+            raise HTTPException(
+                status_code=404,
+                detail="Session expired — please generate again. (Thread not found in checkpointer.)",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
     # Inject human feedback as a "missing_scenarios" hint so scenario_generation
     # picks it up via the retry_supplement logic (requires retry_count > 0).
     feedback_update = {

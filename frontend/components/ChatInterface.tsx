@@ -1607,9 +1607,20 @@ function AssistantCard({
       // Use HITL resume when thread_id is available (resumes from Node 4 only —
       // skips RAG + requirement understanding + dependency mapping).
       // Falls back to full re-run for responses generated before this feature.
-      const result = message.data.thread_id
-        ? await resumeWithFeedback(message.data.thread_id, feedback, message.data.question)
-        : await regenerateScenarios(message.data.question, feedback);
+      // HITL resume — skips RAG + Nodes 2+3. Falls back to full re-run if
+      // the session expired (server restarted, MemorySaver cleared → 404).
+      let result;
+      if (message.data.thread_id) {
+        try {
+          result = await resumeWithFeedback(message.data.thread_id, feedback, message.data.question);
+        } catch (resumeErr: unknown) {
+          const isExpired = resumeErr instanceof Error && resumeErr.message.includes("Session expired");
+          if (!isExpired) throw resumeErr;
+          result = await regenerateScenarios(message.data.question, feedback);
+        }
+      } else {
+        result = await regenerateScenarios(message.data.question, feedback);
+      }
       setLocalFinalOutput(result.final_output);
       if (result.thread_id) {
         message.data.thread_id = result.thread_id;
