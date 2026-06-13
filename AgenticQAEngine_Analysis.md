@@ -40,6 +40,7 @@ Human checkpoints allow reviewers to:
 │  └───────────────────────────────────────────────────────────────────┘   │
 │  Next.js API Routes (proxy layer — /app/api/*)                           │
 │    /api/generate                   → POST /api/generate                  │
+│    /api/resume-with-feedback       → POST /api/resume-with-feedback      │ ← HITL
 │    /api/playwright-generate        → POST /api/playwright-generate       │
 │    /api/playwright-save            → POST /api/playwright-save           │
 │    /api/regenerate-scenarios       → POST /api/regenerate-scenarios      │
@@ -60,8 +61,13 @@ Human checkpoints allow reviewers to:
 │                                                                          │
 │  Scenario generation                                                     │
 │  • POST /api/generate              — runs LangGraph pipeline             │
+│                                      returns thread_id for HITL resume   │
 │                                      → 422 if query is off-domain        │
-│  • POST /api/regenerate-scenarios  — re-runs pipeline with feedback      │
+│  • POST /api/resume-with-feedback  — resumes frozen graph from Node 4   │
+│                                      injects human feedback as scenarios  │
+│                                      → 404 if thread_id expired          │
+│  • POST /api/regenerate-scenarios  — full re-run pipeline with feedback  │
+│                                      (fallback when thread expired)       │
 │                                      → 422 if query is off-domain        │
 │                                                                          │
 │  Script generation (no save until approved)                              │
@@ -116,7 +122,7 @@ Human checkpoints allow reviewers to:
 | Frontend | API client | `lib/api.ts` — typed fetch wrappers |
 | Backend | HTTP server | FastAPI + uvicorn (no `--reload`) |
 | Backend | Async bridge | `asyncio.to_thread` (runs sync LangGraph in event loop) |
-| AI Pipeline | Orchestration | LangGraph `StateGraph` with conditional retry loop |
+| AI Pipeline | Orchestration | LangGraph `StateGraph` with conditional retry loop + `MemorySaver` checkpointing + `interrupt_after` HITL |
 | AI Pipeline | LLM (scenario) | `gpt-4o-mini` via `langchain_openai.ChatOpenAI` |
 | AI Pipeline | LLM (codegen) | `gpt-4o` for feature/POM/test generation |
 | AI Pipeline | LLM (review) | `gpt-4o-mini` for results review |
@@ -146,7 +152,9 @@ QuestionState
 ├── generated_gherkin       ← JSON: BDD Gherkin scenarios
 ├── review_feedback         ← JSON: coverage analysis, gaps, overall_review_status
 ├── final_output            ← copy of generated_gherkin (pipeline final value)
-└── retry_count             ← int: max 2 retries (3 generation passes total)
+├── retry_count             ← int: max 2 retries (3 generation passes total)
+└── human_approved          ← bool: True when human explicitly approves via HITL gate
+                               bypasses auto-retry even if review_agent returns "Needs Improvement"
 ```
 
 ### Pipeline Topology
@@ -182,15 +190,29 @@ START
   │                           writes: review_feedback, final_output    │
   │                           llm: temp=0.1, Review_prompt.md          │
   │                                                                     │
-  ├── [Needs Improvement AND retry_count < 2] ────────────────────────►┘
+  ├── [Needs Improvement AND retry_count < 2 AND NOT human_approved] ─►┘
   │
-  └── [Pass OR retry_count >= 2]  ──► END (→ Scenario Review Gate)
+  └── [Pass OR retry_count >= 2 OR human_approved]
+        │
+        ▼ ⏸ INTERRUPT — graph pauses here (LangGraph checkpointer)
+        │   thread_id returned to frontend; state frozen in MemorySaver
+        │
+        └──► END (→ Scenario Review Gate)
+
+        Resume paths:
+          a) Human approves  → POST /api/resume-with-feedback with human_approved=True
+                                skips Nodes 1–3, re-runs Nodes 4–6 with updated state
+          b) Human provides feedback → POST /api/resume-with-feedback with feedback injected
+                                        as missing_scenarios, retry_count=1
+          c) Thread expired → 404 from backend; frontend falls back to POST /api/regenerate-scenarios
 ```
 
 ### Retry Loop
 
 ```python
 def _should_retry(state: QuestionState) -> str:
+    if state.get("human_approved", False):   # ← HITL: human approval bypasses auto-retry
+        return "end"
     if state.get("retry_count", 0) >= 2:
         return "end"
     try:
@@ -203,6 +225,8 @@ def _should_retry(state: QuestionState) -> str:
 ```
 
 On retry, the loop re-enters at `scenario_generation` — RAG retrieval and requirement/dependency analysis are **not** re-run. The review agent's gap list (`missing_scenarios`, `missing_validation_coverage`, etc.) is injected as an explicit `IMPROVEMENT PASS` supplement into the scenario generation prompt.
+
+The `human_approved` guard prevents an unwanted auto-retry when a human approves scenarios that the review agent rated "Needs Improvement" — without it, approving would trigger another auto-retry cycle instead of ending.
 
 ### Domain Relevance Guard
 
@@ -233,15 +257,139 @@ def retrieve_raw_context(self, question: str) -> str:
 
 **Error propagation**: `ValueError` bubbles through LangGraph → `asyncio.to_thread` → caught in `backend/main.py` as **HTTP 422** (both `/api/generate` and `/api/regenerate-scenarios`). The frontend's `generateTestCases()` reads `err.detail` and displays the message as an error bubble in the chat — no hallucinated scenarios are ever generated for off-domain queries.
 
-### Scenario Re-generation (Human Feedback)
+### Scenario Re-generation (Human Feedback — Legacy Path)
 
-When the human reviewer provides feedback at Gate 1, `POST /api/regenerate-scenarios` re-runs the full LangGraph pipeline with an augmented question:
+When the human reviewer provides feedback at Gate 1 and no `thread_id` is available (or the HITL session has expired), `POST /api/regenerate-scenarios` re-runs the **full** LangGraph pipeline with an augmented question:
 
 ```python
 augmented_question = request.question + "\n\nReviewer feedback: " + request.feedback
 ```
 
 This allows targeted improvements (e.g. "add more edge cases for empty fields") without changing the original question. The result replaces `localFinalOutput` in the frontend state — the reviewer then decides to approve the new scenarios or iterate again.
+
+---
+
+### HITL: LangGraph Checkpointing + Human Feedback Resume
+
+Implemented in commits `ecbc6a9` (core HITL) and `72ee1a7` (expired-thread guard).
+
+#### Architecture
+
+The pipeline uses **LangGraph `MemorySaver`** checkpointing. After Node 6 (`review_agent`) the graph **automatically pauses** (`interrupt_after=["review_agent"]`) and freezes all state under a `thread_id`. Control returns to the API caller immediately — no blocking wait.
+
+```python
+# TestGenerationEngine.py
+from langgraph.checkpoint.memory import MemorySaver
+
+_checkpointer = MemorySaver()   # module-level, shared across all requests
+
+def build_question_agent_graph() -> CompiledGraph:
+    ...
+    return graph.compile(
+        checkpointer=_checkpointer,
+        interrupt_after=["review_agent"],
+    )
+```
+
+#### POST `/api/generate` — generates thread_id
+
+```python
+thread_id = str(uuid.uuid4())
+config = {"configurable": {"thread_id": thread_id}}
+initial_state = {..., "human_approved": False}
+result = await asyncio.to_thread(agent.invoke, initial_state, config)
+return _build_response(thread_id, request.question, result)
+```
+
+The `thread_id` is returned to the frontend as part of the `GenerateResponse` and stored on `message.data` in the chat history. The frontend passes it when the human provides feedback.
+
+#### POST `/api/resume-with-feedback` — resumes from Node 4
+
+```python
+@app.post("/api/resume-with-feedback")
+async def resume_with_feedback(request: ResumeWithFeedbackRequest):
+    config = {"configurable": {"thread_id": request.thread_id}}
+
+    # Expired-thread guard: MemorySaver returns {} for unknown thread_ids
+    # update_state would silently create blank state — guard prevents that
+    snapshot = await asyncio.to_thread(agent.get_state, config)
+    if not snapshot.values:
+        raise HTTPException(status_code=404,
+            detail="Session expired — please generate again. (Thread not found in checkpointer.)")
+
+    feedback_update = {
+        "review_feedback": json.dumps({
+            "overall_review_status": "Needs Improvement",
+            "missing_scenarios": [request.feedback],
+        }),
+        "retry_count": 1,   # activates retry_supplement block in scenario_generation_agent
+        "human_approved": False,
+    }
+    await asyncio.to_thread(agent.update_state, config, feedback_update)
+    result = await asyncio.to_thread(agent.invoke, None, config)  # None = resume
+    return _build_response(request.thread_id, request.question, result)
+```
+
+`agent.invoke(None, config)` resumes the frozen graph **from Node 4** (`scenario_generation`) — Nodes 1–3 (RAG + requirement understanding + dependency mapping) are skipped entirely. This makes HITL re-generation ~40% faster (~20s vs ~50s).
+
+`retry_count=1` (not 0) ensures `scenario_generation_agent`'s `retry_supplement` block activates and injects the human's feedback text as `missing_scenarios` hints into the prompt.
+
+#### Frontend wiring — `handleRegenScenarios`
+
+```typescript
+// ChatInterface.tsx — AssistantCard → handleRegenScenarios
+let result;
+if (message.data.thread_id) {
+  try {
+    result = await resumeWithFeedback(
+      message.data.thread_id, feedback, message.data.question
+    );
+  } catch (resumeErr: unknown) {
+    const isExpired = resumeErr instanceof Error
+      && resumeErr.message.includes("Session expired");
+    if (!isExpired) throw resumeErr;   // unknown error — re-throw
+    result = await regenerateScenarios(message.data.question, feedback);  // fallback
+  }
+} else {
+  result = await regenerateScenarios(message.data.question, feedback);   // old messages
+}
+```
+
+`resumeWithFeedback()` is the fast path (resumes from Node 4). If the backend returns 404 ("Session expired"), the frontend silently falls back to the full `regenerateScenarios()` path (Nodes 1–6) with no visible error.
+
+#### `lib/api.ts` changes
+
+```typescript
+// GenerateResponse now includes thread_id
+interface GenerateResponse {
+  thread_id: string;   // ← NEW
+  ...
+}
+
+// New function
+export async function resumeWithFeedback(
+  threadId: string, feedback: string, question: string,
+): Promise<GenerateResponse> {
+  const res = await fetch("/api/resume-with-feedback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ thread_id: threadId, feedback, question }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { detail?: string }).detail || `Resume failed (${res.status})`);
+  }
+  return res.json();
+}
+```
+
+#### Performance impact
+
+| Path | Nodes run | Wall time (approx) |
+|------|-----------|-------------------|
+| Full pipeline (`/api/generate`) | 1–6 | ~50s |
+| HITL resume (`/api/resume-with-feedback`) | 4–6 only | ~20s |
+| Expired-thread fallback (`/api/regenerate-scenarios`) | 1–6 | ~50s |
 
 ---
 
@@ -817,8 +965,9 @@ Off-domain prompts (e.g. trade management) are blocked by the domain relevance g
 
 | Function | Endpoint | Purpose |
 |----------|----------|---------|
-| `generateTestCases()` | POST `/api/generate` | Run LangGraph pipeline |
-| `regenerateScenarios(question, feedback)` | POST `/api/regenerate-scenarios` | Re-run pipeline with feedback |
+| `generateTestCases()` | POST `/api/generate` | Run LangGraph pipeline; response includes `thread_id` |
+| `resumeWithFeedback(threadId, feedback, question)` | POST `/api/resume-with-feedback` | HITL: resume frozen graph from Node 4 with human feedback; throws "Session expired" on 404 |
+| `regenerateScenarios(question, feedback)` | POST `/api/regenerate-scenarios` | Full re-run pipeline with feedback (fallback when thread expired) |
 | `generatePlaywrightTests(final_output)` | POST `/api/playwright-generate` | Generate scripts preview (no save) |
 | `regenerateScripts(final_output, feedback)` | POST `/api/regenerate-scripts` | Re-gen POM+test with feedback |
 | `saveSuite(previewData)` | POST `/api/playwright-save` | Persist approved suite to disk |
@@ -834,6 +983,10 @@ Off-domain prompts (e.g. trade management) are blocked by the domain relevance g
 
 **Key types added**:
 ```typescript
+// HITL
+interface GenerateResponse { thread_id: string; ... }  // thread_id added for HITL resume
+interface ResumeWithFeedbackRequest { thread_id: string; feedback: string; question: string }
+
 type TriageCategory  = "product_defect" | "locator_drift" | "bad_assertion" | "flaky_timeout";
 interface TriageItem { test_name, category, confidence, root_cause, proposed_fix }
 interface TriageResponse { suite_id, triage: TriageItem[] }
@@ -919,9 +1072,20 @@ Every pipeline node writes to `debug_outputs/<run_id>/`:
 ```
 TestCasesGenerator/
 ├── AgenticQAEngine_Analysis.md      # This document
+├── docs/
+│   ├── architecture_deck.md         # 15-slide Marp presentation (senior leadership demo)
+│   ├── architecture_deck.pdf        # Exported PDF via marp --no-stdin --pdf
+│   ├── architecture_deck.pptx       # Exported PPTX via marp --no-stdin --pptx
+│   ├── architecture_diagram.png     # 650KB dark-theme architecture flowchart (180 DPI)
+│   └── generate_architecture_diagram.py  # matplotlib script to regenerate the PNG
 ├── backend/
 │   ├── main.py                      # FastAPI app, all endpoints
+│   │                                #   /api/generate (now returns thread_id)
+│   │                                #   /api/resume-with-feedback (HITL resume, 404 on expired thread)
 │   ├── TestGenerationEngine.py      # LangGraph 6-node pipeline
+│   │                                #   MemorySaver checkpointer (module-level)
+│   │                                #   interrupt_after=["review_agent"] HITL pause
+│   │                                #   human_approved state field + _should_retry guard
 │   ├── playwright_agent.py          # POM codegen + pytest execution
 │   │                                #   generate_suite_preview, save_approved_suite,
 │   │                                #   regenerate_scripts, get_suite_files, delete_suite
@@ -946,10 +1110,11 @@ TestCasesGenerator/
 │   │   ├── page.tsx                 # Root page
 │   │   └── api/                     # Next.js proxy routes
 │   │       ├── generate/route.ts
+│   │       ├── resume-with-feedback/route.ts ← HITL
 │   │       ├── playwright-generate/route.ts
-│   │       ├── playwright-save/route.ts      ← NEW
-│   │       ├── regenerate-scenarios/route.ts ← NEW
-│   │       ├── regenerate-scripts/route.ts   ← NEW
+│   │       ├── playwright-save/route.ts
+│   │       ├── regenerate-scenarios/route.ts
+│   │       ├── regenerate-scripts/route.ts
 │   │       ├── download/route.ts
 │   │       ├── download-zip/route.ts
 │   │       └── test-suites/
@@ -994,6 +1159,65 @@ TestCasesGenerator/
 
 ---
 
+## Architecture Documentation & Presentation Artifacts
+
+Committed in `88ac49b` (slide deck) and `14b752a` (architecture diagram), all under `docs/`.
+
+### Marp Slide Deck — `docs/architecture_deck.md`
+
+15-slide Marp Markdown presentation for senior leadership demos. Generated to PDF and PPTX via:
+
+```bash
+npx @marp-team/marp-cli docs/architecture_deck.md --no-stdin --pdf  -o docs/architecture_deck.pdf
+npx @marp-team/marp-cli docs/architecture_deck.md --no-stdin --pptx -o docs/architecture_deck.pptx
+```
+
+Note: `--no-stdin` is required — without it `marp` hangs waiting for stdin input.
+
+Slide structure:
+
+| Slide | Title | Content |
+|-------|-------|---------|
+| 1 | AgenticQAEngine | Title, tagline |
+| 2 | The Problem | Manual QA bottlenecks |
+| 3 | The Solution | 4-phase agentic workflow overview |
+| 4 | Full-Stack Architecture | Frontend → FastAPI → LangGraph → Neo4j |
+| 5 | LangGraph Pipeline | 6-node pipeline with retry + HITL interrupt |
+| 6 | Knowledge Layer | Graph RAG, Neo4j, Confluence MCP tools |
+| 7 | MCP Servers | Neo4j (6 tools) + Confluence (5 tools) |
+| 8 | Playwright Agent | Script codegen, execution, Gate 3 triage |
+| 9 | Human-in-the-Loop | 3-gate HITL workflow + HITL checkpointing |
+| 10 | Frontend Workflow | WorkflowStage state machine, review gates |
+| 11 | Technology Stack | Full stack table |
+| 12 | Results & Metrics | Pipeline timing, LLM call breakdown |
+| 13 | Live Demo Flow | Step-by-step walkthrough |
+| 14 | Roadmap | Cross-domain RAG, video capture, parallel agents |
+| 15 | Q&A | Contact + repo |
+
+### Architecture Flowchart — `docs/architecture_diagram.png`
+
+650KB, 180 DPI, dark-theme PNG generated by `docs/generate_architecture_diagram.py` (matplotlib/Python).
+
+Layout — 7 horizontal layers:
+
+| Layer | Color | Contents |
+|-------|-------|---------|
+| Frontend (Next.js) | Blue | ChatInterface components, WorkflowStage gates |
+| Backend API (FastAPI) | Green | /api/generate, /api/resume-with-feedback, Playwright routes |
+| LangGraph Pipeline | Purple | 6 numbered nodes, HITL interrupt badge, retry loop arrow |
+| Knowledge Layer | Orange | RequirementGraphEngine, domain guard, Neo4j vector + fulltext |
+| Playwright Agent | Teal | generate_suite_preview, triage_failures_agent, run_single_test |
+| MCP Servers | Green (light) | neo4j_mcp_server.py (6 tools), confluence_mcp_server.py (5 tools) |
+| Data Stores | Red | Neo4j Graph DB, suites.json manifest, failure_artifacts/ |
+
+Includes: numbered pipeline nodes [1]–[6], HITL interrupt label between Node 6 and END, retry loop arrow from Node 6 back to Node 4, legend, footer with tech stack.
+
+To regenerate: `python docs/generate_architecture_diagram.py`
+
+**Known font warnings**: circled digit glyphs (①②…) and ⏸ are missing from DejaVu Sans Mono on Windows — replaced with ASCII equivalents `[1][2]` and `||` in the final version. The `UnicodeEncodeError` on the `print` statement was fixed by using `print("Saved ->", OUT)` instead of f-string with `→`.
+
+---
+
 ## Backend Startup
 
 The backend must be started **without `--reload`** to prevent uvicorn from killing in-flight test runs when source files change mid-execution:
@@ -1006,7 +1230,7 @@ The backend must be started **without `--reload`** to prevent uvicorn from killi
 .venv/Scripts/python.exe -m uvicorn backend.main:app --reload
 ```
 
-At startup, `build_question_agent_graph()` and embedding weights are loaded once and shared across all requests, avoiding re-loading on each call.
+At startup, `build_question_agent_graph()` and embedding weights are loaded once and shared across all requests, avoiding re-loading on each call. The `_checkpointer = MemorySaver()` instance is also module-level — all threads share the same in-memory checkpoint store for the lifetime of the process. Restarting the backend clears all thread state (HITL sessions become expired immediately; frontend falls back to full re-generation).
 
 ---
 
@@ -1014,9 +1238,10 @@ At startup, `build_question_agent_graph()` and embedding weights are loaded once
 
 ```
 # AI / Orchestration
-langchain_openai     ← LLM interface (gpt-4o, gpt-4o-mini)
-langgraph            ← state machine (conditional edges, retry loop)
-langchain_core       ← HumanMessage wrapper
+langchain_openai                  ← LLM interface (gpt-4o, gpt-4o-mini)
+langgraph                         ← state machine (conditional edges, retry loop)
+langgraph.checkpoint.memory       ← MemorySaver: in-process HITL checkpointer
+langchain_core                    ← HumanMessage wrapper
 
 # Backend
 fastapi              ← REST API
